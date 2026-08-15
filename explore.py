@@ -28,6 +28,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+import counters
 import overlay
 from board import Grid, N, detect_board
 from emulator_window import EmulatorWindow, capture_client, enumerate_candidates
@@ -78,6 +79,13 @@ class ExploreConfig:
     # 탐사에는 종착점이 없지만, 판에 나오는 주황칩은 반드시 먹어야 한다.
     # 그래서 주황 카드를 목적지로 취급해 1순위로 가져간다.
     orange_goal_without_template: bool = True
+
+    # 아이템 개수 (왼쪽 아래 걸음수 / 부수기 / 돌진)
+    # 개수를 읽어서 **0 이면 아예 시도하지 않는다.** 예전에는 해 보고 안내문이
+    # 뜨면 실패로 세는 방식이라, 쓸 게 없을 때도 두 번씩 헛클릭하고 안내문이
+    # 사라지길 기다렸다. 숫자 템플릿이 없어 못 읽으면 예전 방식으로 돌아간다.
+    watch_counters: bool = True
+    stop_when_out_of_steps: bool = True   # 걸음수가 0 이면 매크로를 멈춘다
 
     # 장애물 파괴
     # 오른쪽이 막히면 장애물을 직접 클릭하거나, 우측 하단 초록색 버튼을 눌러
@@ -136,6 +144,9 @@ class ExploreEngine:
         self.locked_grid: Grid | None = None
         self._locked_size: tuple[int, int] | None = None
         self._grid_votes: deque = deque(maxlen=9)
+        # 왼쪽 아래 아이템 개수. 못 읽으면 항목이 None 이다.
+        self.counts = counters.Counters()
+        self._last_counts_line = ""
 
     # ---------------------------------------------------------------- 정지
     def stop(self) -> None:
@@ -352,7 +363,41 @@ class ExploreEngine:
         self.locked_grid = chosen
         return chosen
 
-    # --------------------------------------------- 초록 버튼(장애물 부수기)
+    # ------------------------------------------------- 아이템 개수 모니터링
+    def _update_counts(self, img: np.ndarray) -> None:
+        """왼쪽 아래 걸음수/부수기/돌진 개수를 읽어 둔다.
+
+        못 읽어도 그냥 넘어간다(숫자 템플릿이 없는 경우). 그때는 개수가 None 이라
+        아래 _can_use 가 '모르니 해 보자'로 답한다.
+        """
+        if not self.cfg.watch_counters:
+            return
+        try:
+            new = counters.read(img)
+        except Exception as e:                       # 읽기 실패가 매크로를 멈추면 안 된다
+            self.log(f"[개수] 읽기 실패: {type(e).__name__}: {e}")
+            self.cfg.watch_counters = False
+            return
+        self.counts = new
+        line = new.describe()
+        if line != self._last_counts_line:
+            self.log(f"[개수] {line}")
+            self._last_counts_line = line
+
+    def _can_use(self, name: str) -> bool:
+        """그 아이템을 쓸 수 있는가. **모르면 True**(예전처럼 해 보고 판단).
+
+        0 이라고 확실히 읽었을 때만 막는다. 잘못 읽어서 못 쓰게 되는 것보다,
+        모를 때는 시도해 보는 편이 낫다.
+        """
+        left = self.counts.get(name)
+        return left is None or left > 0
+
+    def _out_of_steps(self) -> bool:
+        return (self.cfg.stop_when_out_of_steps
+                and self.counts.steps is not None and self.counts.steps <= 0)
+
+    # --------------------------------------------- 초록 버튼(돌진으로 장애물 부수기)
     def _press_green_button(self) -> bool:
         """우측 하단 초록색 버튼을 눌러 장애물을 부순다.
 
@@ -360,6 +405,9 @@ class ExploreEngine:
         (실측: 30회) 함부로 누르면 안 된다.
         """
         if not self.cfg.use_green_button:
+            return False
+        if not self._can_use("dash"):
+            self.log(f"[초록버튼] 돌진 아이템이 0개입니다. 누르지 않습니다.")
             return False
         if (self.cfg.green_button_max_uses
                 and self.stats.green_button_uses >= self.cfg.green_button_max_uses):
@@ -606,6 +654,14 @@ class ExploreEngine:
                     self._wait_toast_clear()
                     continue
 
+                # 남은 아이템 개수를 사이클마다 확인한다. 걸음수가 다 떨어졌으면
+                # 더 움직일 수 없으므로 계속 클릭해 봐야 실패만 쌓인다.
+                self._update_counts(img)
+                if self._out_of_steps():
+                    self.log("[개수] 걸음수를 다 썼습니다. 매크로를 멈춥니다.")
+                    self.status("걸음수 소진")
+                    break
+
                 grid = self._stable_grid(img, seed=True)
                 if grid is None:
                     lost += 1
@@ -677,6 +733,13 @@ class ExploreEngine:
                              f"{self.cfg.blocked_wait_sec:g}초 기다립니다.")
                     self._sleep(self.cfg.blocked_wait_sec)
                     continue
+
+                # 부수기 아이템이 0 이면 장애물 클릭은 해 봐야 소용없다.
+                # 예전에는 두 번 눌러 보고 안내문이 뜨는 걸 확인해야 접었다.
+                if (plan.kind == PlanKind.BREAK_OBSTACLE
+                        and not self.break_disabled and not self._can_use("break")):
+                    self.log("[장애물] 부수기 아이템이 0개라 클릭하지 않습니다.")
+                    self.break_disabled = True
 
                 if plan.kind == PlanKind.BREAK_OBSTACLE and self.break_disabled:
                     # 장애물 직접 클릭이 안 먹히는 것을 확인했다면 초록 버튼을 쓴다.

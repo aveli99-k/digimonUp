@@ -41,6 +41,8 @@
     "lost_retry_sec": 0.8,
     "toast_min": 0.65,
     "toast_clear_repeat": 2,
+    "watch_counters": true,
+    "stop_when_out_of_steps": true,
     "orange_goal_without_template": true,
     "allow_obstacle_break": true,
     "obstacle_break_max_failures": 2,

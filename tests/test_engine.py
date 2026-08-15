@@ -542,3 +542,59 @@ def test_서로_다른_이름은_막지_않는다():
     import single_instance
     assert single_instance.acquire(r"Global\digimonUp_test_mutex_a") is True
     assert single_instance.acquire(r"Global\digimonUp_test_mutex_b") is True
+
+
+# ------------------------------------------- 아이템 개수 모니터링 (실측 기반)
+def _counts(steps=None, brk=None, dash=None):
+    import counters
+    return counters.Counters(steps=steps, break_=brk, dash=dash)
+
+
+def test_돌진이_0개면_초록버튼을_누르지_않는다():
+    """예전에는 눌러 보고 안 되면 포기했다. 개수를 알면 아예 안 누른다."""
+    eng = _engine([synth.make_board(BLOCKED)] * 5)
+    eng.counts = _counts(dash=0)
+    assert eng._press_green_button() is False
+    assert eng.window.clicks == []
+    assert eng.stats.green_button_uses == 0
+
+
+def test_개수를_모르면_예전처럼_시도한다():
+    """숫자 템플릿이 없어 못 읽는 경우. 막으면 아예 못 쓰게 되므로 시도한다."""
+    eng = _engine([synth.make_board(BLOCKED)] * 5)
+    eng.counts = _counts()               # 전부 None = 모름
+    assert eng._can_use("dash") is True
+    assert eng._can_use("break") is True
+
+
+def test_남아_있으면_쓴다():
+    eng = _engine([synth.make_board(BLOCKED)] * 5)
+    eng.counts = _counts(dash=3, brk=7)
+    assert eng._can_use("dash") is True
+    assert eng._can_use("break") is True
+
+
+def test_걸음수가_0이면_멈춘다(monkeypatch):
+    """더 움직일 수 없는데 계속 클릭하면 이동 확인 실패만 쌓인다."""
+    img = synth.make_board(LAYOUT_AT[(1, 1)])
+    eng = _engine([img] * 50, cycle_pause_sec=0.0)
+    eng.pick_window = lambda: eng.window
+    monkeypatch.setattr(explore.counters, "read", lambda im: _counts(steps=0))
+
+    t = threading.Thread(target=eng.run, daemon=True)
+    t.start(); t.join(timeout=5)
+    assert not t.is_alive(), "걸음수가 0인데 계속 돌았습니다"
+    assert eng.window.clicks == [], "걸음수가 0인데 클릭했습니다"
+
+
+def test_개수_읽기가_실패해도_매크로는_계속_돈다(monkeypatch):
+    """카운터 읽기는 부가 기능이다. 여기서 터져도 본체가 멈추면 안 된다."""
+    img = synth.make_board(LAYOUT_AT[(1, 1)])
+    eng = _engine([img] * 10)
+
+    def boom(im):
+        raise ValueError("일부러 낸 오류")
+
+    monkeypatch.setattr(explore.counters, "read", boom)
+    eng._update_counts(img)              # 예외가 밖으로 나오면 안 된다
+    assert eng.cfg.watch_counters is False, "실패한 뒤에도 계속 읽으려 합니다"

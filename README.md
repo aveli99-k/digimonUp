@@ -35,7 +35,7 @@
 ## 필요한 것
 
 - **Windows** (창 캡처와 클릭에 Windows API 를 씁니다)
-- **Python 3.10 이상** — 위 zip 을 받았다면 필요 없습니다
+- **Python 3.10 이상** — 위 EXE 를 받았다면 필요 없습니다
 - **앱플레이어** — MuMuPlayer, LDPlayer, NoxPlayer, BlueStacks, MEmu 등
 
 목록에 없는 앱플레이어도 됩니다. 창 이름이 아니라 **화면에 5x5 게임판이 보이는지**로
@@ -110,6 +110,23 @@ python tools\capture_explore.py
 
 ---
 
+## 아이템 개수 읽기
+
+왼쪽 아래의 **걸음수 / 부수기 / 돌진** 개수를 읽어서, 남은 게 0개면 아예 시도하지
+않습니다. 걸음수를 다 쓰면 매크로가 스스로 멈춥니다.
+
+숫자를 읽으려면 0~9 모양이 필요한데, 저장소에는 만든 사람 화면에서 딴 것이 들어
+있습니다. 개수가 `?` 로 나오면 아래를 실행해 채우면 됩니다.
+
+```bash
+python tools\capture_counters.py
+```
+
+화면에 보이는 세 숫자를 입력하면 그 글자들을 잘라 저장합니다. **다 모으지 않아도
+됩니다** — 못 읽는 줄은 `?` 로 두고, 그 항목만 예전처럼 '해 보고 판단'합니다.
+
+---
+
 ## 자주 바꾸는 설정 (`config.json`)
 
 | 키 | 기본값 | 설명 |
@@ -117,6 +134,8 @@ python tools\capture_explore.py
 | `explore.window_title_hint` | `""` | 앱플레이어를 여러 개 띄웠을 때 쓸 창의 제목 일부 |
 | `explore.board_min` | `0.45` | 5x5 격자 검출 최소 신뢰도. 못 찾으면 낮추세요 |
 | `explore.move_timeout_sec` | `2.2` | 한 칸 이동 확인 최대 대기 |
+| `explore.watch_counters` | `true` | 왼쪽 아래 아이템 개수를 읽어 헛클릭을 막습니다 |
+| `explore.stop_when_out_of_steps` | `true` | 걸음수를 다 쓰면 매크로를 멈춥니다 |
 | `explore.save_debug` | `true` | 디버그 이미지 저장 (끄면 조금 빨라집니다) |
 | `confidence` | `0.85` | 1번 기능의 템플릿 일치 기준 |
 | `giveup_delay_sec` | `5.0` | 1번 기능에서 포기 버튼 등장 후 클릭까지 대기 |
@@ -135,10 +154,11 @@ python tools\capture_explore.py
 | `network_macro.py` / `explore.py` | 1번 / 2번 기능 본체 |
 | `emulator_window.py` | 앱플레이어 창 찾기·고정·캡처·클릭 |
 | `board.py` / `recognize.py` / `pathfind.py` | 격자 검출 / 셀 인식 / 경로 계산 |
+| `counters.py` | 왼쪽 아래 걸음수·부수기·돌진 개수 읽기 |
 | `tools/` | 창 진단, 템플릿 캡처, 인식 점검, 아이콘 생성 |
 | `scripts/` | 실행·빌드·바로가기 스크립트 |
 | `assets/` | 앱 아이콘 (`tools/make_icon.py` 로 만듭니다) |
-| `tests/` | 자동 테스트 (101개) |
+| `tests/` | 자동 테스트 (109개) |
 
 ```bash
 python -m pytest tests -q
