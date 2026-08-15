@@ -28,6 +28,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+import chiptrack
 import counters
 import overlay
 from common import is_stop_key_pressed, vk_of
@@ -35,7 +36,8 @@ from board import Grid, N, detect_board
 from emulator_window import (EmulatorWindow, capture_client,
                              enable_dpi_awareness, enumerate_candidates)
 from pathfind import PlanKind, plan_route
-from recognize import (Kind, Scene, TemplateSet, analyze, find_blocked_toast,
+from recognize import (Detection, Kind, Scene, TemplateSet, analyze,
+                       find_blocked_toast,
                        find_green_button, find_top_tab, hsv_of, load_templates,
                        mask_highlight, mask_obstacle, motion_report,
                        track_player_fast, _frac)
@@ -177,12 +179,10 @@ class ExploreEngine:
         # 마지막 움직임 검사에서 '판이 아직 스크롤 중'이었는지.
         # 그런 프레임은 칩/장애물 인식도 믿을 수 없어 그 사이클을 통째로 건너뛴다.
         self._board_animating = False
-        # 직전 사이클에서 **검출된 그대로의** 칩 자리와, 그 뒤로 몇 번
-        # 스크롤했는지. 칩 획득 이펙트를 걸러내는 데 쓴다(_confirm_goals).
-        self._prev_goals: set = set()
+        # 칩 묶음 추적기. 한 번 읽어 잠그고 다 먹을 때까지 새 칩을 보지 않는다.
+        # 자세한 근거는 chiptrack.py 참고.
+        self.chips = chiptrack.ChipTracker(cols=N)
         self._scrolls_since = 0
-        # 첫 인식에는 견줄 직전 화면이 없다. 그때만 무조건 받아들인다.
-        self._first_goal_scan = True
 
     # ---------------------------------------------------------------- 정지
     def stop(self) -> None:
@@ -443,55 +443,46 @@ class ExploreEngine:
             return None
         return None
 
-    # ------------------------------------------- 칩 획득 이펙트 걸러내기
+    # ------------------------------------------------- 칩 묶음 추적
     def _confirm_goals(self, scene: Scene) -> None:
-        """**칩은 오른쪽 끝으로만 새로 들어온다.** 그 밖에서 생긴 칩은 무시한다.
+        """검출된 칩을 그대로 쓰지 않고 **추적 중인 묶음**으로 갈아끼운다.
 
-        칩을 먹으면 디지몬 주변으로 칩이 흩어지는 이펙트가 뜬다. 그 칩들은
-        템플릿 점수 0.94~0.98, 주황 비율 0.096~0.202 로 진짜와 전혀 구별되지
-        않는다. 진짜 칩과 **같은 그림**이라 모양·색·위치로는 가를 수 없다.
-
-        가르는 것은 게임 규칙이다. 판은 오른쪽으로 전진할 때만 밀리고, 그때
-        **맨 오른쪽 열로만 새 지형이 들어온다**(19장). 그러니 칩이 새로 나타날
-        수 있는 자리는 그 새 열뿐이다. 전진하지 않았다면 새 칩은 아예 생길 수
-        없다. 판 한가운데에 갑자기 늘어난 칩은 예외 없이 이펙트다.
-
-        그래서 이번에 보인 칩은 다음 둘 중 하나여야 인정한다.
-            1. 직전 사이클에도 있던 칩 (그사이 전진한 만큼 열이 줄어든 자리)
-            2. 그사이 새로 들어온 열에 있는 칩 (오른쪽 끝 k 개 열)
-
-        한 번 놓쳤다 다시 보인 진짜 칩은 한 사이클 늦게 인정된다. 2열 이상의
-        칩은 어차피 그 행에 서서 전진해야 들어오는 것이라 손해가 없다.
+        묶음은 한 번 읽어 잠그고, 다 먹을 때까지 새 칩을 받지 않는다. 그래서
+        칩 획득 이펙트가 아무리 그럴듯해도 끼어들 자리가 없다.
+        자세한 근거와 규칙은 chiptrack.py 를 보라.
         """
-        now = {(d.row, d.col) for d in scene.goals}
-        shift = self._scrolls_since
-
-        if self._first_goal_scan:
-            # 처음에는 견줄 대상이 없다. 판단을 미루고 그대로 받는다.
-            self._first_goal_scan = False
-            self._prev_goals, self._scrolls_since = now, 0
-            return
-
-        expected = {(r, c - shift) for r, c in self._prev_goals}
-        fresh_cols = range(N - shift, N)          # 전진한 만큼 오른쪽에서 들어온 열
-        confirmed = {(r, c) for (r, c) in now
-                     if (r, c) in expected or c in fresh_cols}
-
-        # 다음 사이클을 위해 **거른 뒤가 아니라 검출된 그대로**를 기억한다.
-        # 그래야 이번에 놓쳤다 다시 보인 진짜 칩이 다음 사이클에 인정받는다.
-        self._prev_goals = now
+        # 지난 사이클 이후 전진한 만큼 판이 밀렸다. 알고 있던 칩도 함께 옮긴다.
+        self.chips.advanced(self._scrolls_since)
         self._scrolls_since = 0
 
-        dropped = now - confirmed
-        if not dropped:
-            return
-        scene.goals = [d for d in scene.goals if (d.row, d.col) in confirmed]
-        for r, c in dropped:
+        # 플레이어가 서 있는 칸의 칩은 이미 먹은 것이다.
+        if scene.player is not None:
+            self.chips.collected_at((scene.player.row, scene.player.col))
+
+        detected = {(d.row, d.col) for d in scene.goals}
+        was_locked = self.chips.locked
+        valid = self.chips.update(detected)
+
+        if not was_locked and valid:
+            self.log(f"[칩] 묶음을 새로 읽었습니다: {sorted(valid)} "
+                     f"(다 먹을 때까지 새 칩은 보지 않습니다)")
+
+        ignored = detected - valid
+        scene.goals = [d for d in scene.goals if (d.row, d.col) in valid]
+        for r, c in ignored:
             if scene.cells[r][c] == Kind.GOAL:
                 scene.cells[r][c] = Kind.EMPTY
-        scene.notes.append(
-            f"칩 {sorted(dropped)} 은(는) 새 열이 아닌 곳에 갑자기 생겼습니다. "
-            f"획득 이펙트로 보고 목표에서 뺍니다 (이번 전진 {shift}칸).")
+        # 검출은 놓쳤지만 추적 중인 칩은 판에 그대로 살려 둔다.
+        # 한 프레임 안 보인다고 목표를 놓으면 다 온 칩을 눈앞에서 버린다.
+        for r, c in valid - detected:
+            if scene.cells[r][c] == Kind.EMPTY:
+                scene.cells[r][c] = Kind.GOAL
+                scene.goals.append(Detection(Kind.GOAL, r, c, 0.5,
+                                             note="추적 중 (이번 프레임은 못 봄)"))
+        if ignored:
+            scene.notes.append(
+                f"추적 중인 묶음에 없는 칩 {sorted(ignored)} 은(는) 획득 이펙트로 "
+                f"보고 무시합니다.")
 
     # ------------------------------------------------- 아이템 개수 모니터링
     def _update_counts(self, img: np.ndarray) -> None:

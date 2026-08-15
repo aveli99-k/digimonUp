@@ -658,50 +658,87 @@ def _scene_with_goals(goals):
     return Scene(grid=None, cells=cells, goals=dets)
 
 
-def test_전진하지_않았는데_늘어난_칩은_이펙트로_본다():
+def _lock(eng, goals):
+    """묶음을 잠근다. 두 프레임 연속으로 같아야 잠기므로 두 번 준다."""
+    for _ in range(2):
+        eng._confirm_goals(_scene_with_goals(goals))
+
+
+def test_잠근_묶음에_없는_칩은_이펙트로_본다():
     """실측: 칩을 먹으면 디지몬 주변으로 칩이 흩어지는 이펙트가 뜬다.
 
-    그 칩들은 템플릿 0.94~0.98, 주황 0.096~0.202 로 진짜와 구별되지 않아
-    한 프레임에 칩이 5~7개로 잡혔고, 매크로가 쫓아가 왼쪽으로 헛걸음했다.
-
-    판은 오른쪽으로 전진할 때만 밀리고 그때 맨 오른쪽 열로만 새 지형이
-    들어온다. 전진하지 않았다면 새 칩은 생길 수 없다.
+    그 칩들은 템플릿 0.94~0.98, 주황 0.096~0.202 로 진짜와 같은 그림이라
+    모양·색으로는 가를 수 없다. 그래서 묶음을 잠그고 새 칩을 아예 안 본다.
     """
     from recognize import Kind
     eng = _engine([])
-    eng._confirm_goals(_scene_with_goals([(1, 3)]))      # 기준 화면
+    _lock(eng, [(1, 3)])
 
-    sc = _scene_with_goals([(1, 3), (4, 0), (4, 1)])     # 전진 0인데 둘이 늘었다
+    sc = _scene_with_goals([(1, 3), (4, 0), (4, 1)])     # 이펙트 둘이 끼어들었다
     eng._confirm_goals(sc)
-    assert [(d.row, d.col) for d in sc.goals] == [(1, 3)]
+    assert sorted((d.row, d.col) for d in sc.goals) == [(1, 3)]
     assert sc.cells[4][0] is Kind.EMPTY, "경로 계산이 보는 판에서도 빠져야 합니다"
     assert sc.cells[1][3] is Kind.GOAL
 
 
-def test_전진해서_새로_들어온_열의_칩은_받아들인다():
-    """오른쪽 끝은 칩이 새로 들어올 수 있는 **유일한** 자리다."""
+def test_이펙트가_오래_남아도_끼어들지_못한다():
+    """'연속 두 번 보이면 인정' 규칙은 이펙트가 두 사이클 남으면 뚫렸다."""
     eng = _engine([])
-    eng._confirm_goals(_scene_with_goals([(2, 4)]))
+    _lock(eng, [(1, 3)])
+    for _ in range(4):
+        sc = _scene_with_goals([(1, 3), (2, 1)])
+        eng._confirm_goals(sc)
+    assert sorted((d.row, d.col) for d in sc.goals) == [(1, 3)]
 
-    eng._scrolls_since = 1                      # 한 칸 전진 -> 4열이 새로 들어왔다
-    sc = _scene_with_goals([(2, 3), (0, 4)])    # 밀려온 칩 + 새 열의 새 칩
-    eng._confirm_goals(sc)
-    assert sorted((d.row, d.col) for d in sc.goals) == [(0, 4), (2, 3)]
 
-
-def test_전진해서_열이_밀려도_같은_칩으로_알아본다():
-    """오른쪽으로 전진하면 판이 밀려 칩의 열 번호가 하나 줄어든다."""
+def test_전진하면_칩_자리를_따라간다():
+    """전진 한 번에 판이 한 열 밀린다. 알고 있던 칩도 함께 옮겨야 한다."""
     eng = _engine([])
-    eng._confirm_goals(_scene_with_goals([(2, 4)]))
+    _lock(eng, [(2, 4)])
 
     eng._scrolls_since = 1
-    after = _scene_with_goals([(2, 3)])
-    eng._confirm_goals(after)
-    assert [(d.row, d.col) for d in after.goals] == [(2, 3)],         "밀린 자리의 같은 칩을 새 칩으로 보면 안 됩니다"
-
-
-def test_첫_인식은_견줄_대상이_없으므로_그대로_받는다():
-    eng = _engine([])
-    sc = _scene_with_goals([(1, 1), (3, 2)])
+    sc = _scene_with_goals([(2, 3)])
     eng._confirm_goals(sc)
-    assert len(sc.goals) == 2
+    assert [(d.row, d.col) for d in sc.goals] == [(2, 3)]
+
+
+def test_한_프레임_놓쳐도_칩을_버리지_않는다():
+    """다 온 칩을 한 번 못 봤다고 놓으면 눈앞에서 버리는 셈이다."""
+    from recognize import Kind
+    eng = _engine([])
+    _lock(eng, [(2, 2)])
+
+    sc = _scene_with_goals([])           # 이번 프레임엔 안 보였다
+    eng._confirm_goals(sc)
+    assert [(d.row, d.col) for d in sc.goals] == [(2, 2)]
+    assert sc.cells[2][2] is Kind.GOAL
+
+
+def test_계속_안_보이면_없어진_것으로_본다():
+    eng = _engine([])
+    _lock(eng, [(2, 2)])
+    for _ in range(eng.chips.MISS_LIMIT):
+        sc = _scene_with_goals([])
+        eng._confirm_goals(sc)
+    assert sc.goals == []
+
+
+def test_플레이어가_선_칸의_칩은_먹은_것으로_본다():
+    from recognize import Detection, Kind
+    eng = _engine([])
+    _lock(eng, [(2, 1)])
+
+    sc = _scene_with_goals([])
+    sc.player = Detection(Kind.PLAYER, 2, 1, 1.0)
+    eng._confirm_goals(sc)
+    assert not eng.chips.locked, "먹은 칩만 있었으면 묶음이 비어야 합니다"
+
+
+def test_묶음을_다_먹으면_다시_읽는다():
+    eng = _engine([])
+    _lock(eng, [(0, 2)])
+    eng.chips.collected_at((0, 2))
+    assert not eng.chips.locked
+
+    _lock(eng, [(3, 4), (1, 3)])          # 새 묶음을 읽는다
+    assert eng.chips.chips == {(3, 4), (1, 3)}

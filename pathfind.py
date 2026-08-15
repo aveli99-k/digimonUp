@@ -215,19 +215,31 @@ def horizontal_triple_members(cells: list[list[Kind]]) -> set[Cell]:
             for i in range(3)}
 
 
-def _row_value(cells, scene, row: int) -> int:
+def _row_value(cells, scene, row: int) -> float:
     """그 행에서 전진하면 **앞으로 들어올** 칩/아이템의 값어치 합.
 
     2열 이상은 걸어서 갈 수 없다. 대신 그 행에 서서 전진하면 열 번호가 하나씩
     줄어들며 결국 플레이어 자리로 들어온다. 그러니 '쫓아갈 목표'가 아니라
     **어느 행에서 전진할지**를 정하는 근거로 써야 한다.
+
+    **가까운 칩이 더 급하다.** 2열 칩은 지금 이 전진에 들어오므로 지금 그 행에
+    있어야 한다. 4열 칩은 세 번 뒤라 그사이에 옮겨 가면 된다. 그래서 값어치를
+    남은 전진 횟수로 나눈다.
+
+        2열 칩 4/1 = 4.00    3열 칩 4/2 = 2.00    4열 칩 4/3 = 1.33
+
+    이렇게 하면 '지금 놓치면 영영 못 먹는 것'이 먼저가 되고, 먼 칩은 방향만
+    잡아 준다. 여러 칩이 여러 행에 흩어져 있어도 매 전진마다 가장 급한 것을
+    챙기면서 자연스럽게 다 주워진다.
     """
-    total = 0
+    total = 0.0
     for c in range(ADVANCE_COL, N):
         kind = cells[row][c]
         if kind == Kind.ITEM and scene.item_kinds.get((row, c), "") in DETOUR_SKIP_KINDS:
             continue          # 걸음수는 행을 옮겨 가면서까지 챙기지 않는다
-        total += PICKUP_VALUE.get(kind, 0)
+        value = PICKUP_VALUE.get(kind, 0)
+        if value:
+            total += value / (c - PLAYER_MAX_COL)     # 남은 전진 횟수로 나눈다
     return total
 
 
@@ -331,9 +343,12 @@ def plan_route(scene: Scene, item_max_detour: int = 2) -> Plan:
         reason = (f"{row}행에서 전진 (세로 {cost}칸 이동 후 오른쪽)"
                   if cost else "제자리에서 바로 전진")
         if value:
-            reason += f" — 그 행 앞쪽의 값어치 {value}"
+            reason += f" — 그 행 앞쪽의 값어치 {value:.2f}"
         # 칩이 들어오는 행으로 가는 것이면 '목적지' 계획으로 부른다.
-        kind = PlanKind.GOAL if value >= PICKUP_VALUE[Kind.GOAL] else PlanKind.RIGHT_EDGE
+        # 값어치 숫자로 가르지 않는다. 급한 정도로 나눈 값이라 먼 칩은 작게
+        # 나오는데, 칩을 향해 가는 것은 거리와 상관없이 칩 계획이다.
+        row_has_chip = any(cells[row][c] == Kind.GOAL for c in range(ADVANCE_COL, N))
+        kind = PlanKind.GOAL if row_has_chip else PlanKind.RIGHT_EDGE
         right_plan = Plan(kind, path, path[-1], reason)
 
     # --- 2순위: 전진 경로에서 벗어나 있는 바로 근처의 아이템 -----------------
