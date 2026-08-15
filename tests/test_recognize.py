@@ -470,3 +470,56 @@ def test_아이템_폴더에는_칩이_없어야_한다():
                                    scales=recognize.ITEM_SCALES)[0]
     assert as_item < recognize.ITEM_TEMPLATE_MIN, \
         f"칩이 아이템 템플릿에 {as_item:.2f} 로 맞습니다. item/ 에 칩이 섞여 있습니다"
+
+
+# ------------------- 판 위의 아이템 (걸음수/부수기/돌진) — 실측 회귀
+ITEMS_FIXTURE = "tests/fixtures/explore_items.png"
+
+
+def test_노란_부수기_아이템을_칩으로_읽지_않는다():
+    """실측 회귀: 판 위의 부수기 아이템(노란 발톱)이 주황칩으로 잡혔다.
+
+    색 기반 대체 경로가 노란색을 주황 카드로 읽은 것이다(주황 비율 0.067).
+    그러면 매크로가 아이템을 **1순위 목표**로 쫓아간다. 칩이 걸음수보다
+    중요하다는 원칙이 정반대로 작동하는 셈이다.
+
+    지금은 아이템 템플릿을 칩보다 먼저 보고, 아이템으로 확인된 칸은 칩 색
+    판정에서 뺀다. 템플릿이 색보다 강한 증거다.
+    """
+    tpl = _real_templates()
+    if not (tpl["item"] and tpl["goal"]):
+        pytest.skip("템플릿이 비어 있습니다")
+    img = cv2.imread(ITEMS_FIXTURE)
+    g = board.detect_board(img)
+    sc = recognize.analyze(img, g, tpl, orange_goal_without_template=True)
+
+    items = {(d.row, d.col) for d in sc.detections if d.kind is Kind.ITEM}
+    goals = {(d.row, d.col) for d in sc.goals}
+    assert (1, 3) in items, "노란 부수기 아이템을 못 찾았습니다"
+    assert (2, 2) in items, "초록 돌진 아이템을 못 찾았습니다"
+    assert (1, 3) not in goals, "부수기 아이템을 칩으로 읽었습니다"
+    assert not goals, f"이 판에는 칩이 없는데 {goals} 를 칩으로 봤습니다"
+
+
+def test_아이템_템플릿_점수가_충분히_갈린다():
+    """기준을 아슬아슬하게 잡으면 빈칸이 아이템으로 깜빡인다.
+
+    실측(이 픽스처): 진짜 아이템 1.00, 나머지 칸 최대 0.613.
+    """
+    tpl = _real_templates()
+    if not tpl["item"]:
+        pytest.skip("templates/explore/item 이 비어 있습니다")
+    img = cv2.imread(ITEMS_FIXTURE)
+    g = board.detect_board(img)
+    real = {(1, 3), (2, 2)}
+    hit, miss = [], []
+    for r in range(5):
+        for c in range(5):
+            x0, y0, x1, y1 = g.cell_rect(r, c)
+            s = recognize.match_best(img[y0:y1, x0:x1], tpl["item"],
+                                     scales=recognize.ITEM_SCALES)[0]
+            (hit if (r, c) in real else miss).append(s)
+    assert min(hit) > max(miss) + 0.15, \
+        f"진짜 {min(hit):.2f} 와 나머지 {max(miss):.2f} 의 간격이 좁습니다"
+    assert max(miss) < recognize.ITEM_TEMPLATE_MIN < min(hit), \
+        f"기준 {recognize.ITEM_TEMPLATE_MIN} 이 둘 사이에 있지 않습니다"

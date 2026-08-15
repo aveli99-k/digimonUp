@@ -573,7 +573,7 @@ def detect_player(img: np.ndarray, grid: Grid, tpl: dict[str, TemplateSet],
 OBSTACLE_FRAC = 0.32
 OBSTACLE_FRAC_WEAK = 0.18     # 가려졌을 때를 위한 완화 기준
 ITEM_WARM_FRAC = 0.10
-ITEM_TEMPLATE_MIN = 0.60
+ITEM_TEMPLATE_MIN = 0.78
 # 아이템 아이콘도 셀 높이에 맞춰 정규화하지 않는다(위 GOAL_SCALES 와 같은 이유).
 ITEM_SCALES = (0.6, 0.75, 0.9, 1.0, 1.15, 1.35)
 GOAL_TEMPLATE_MIN = 0.62
@@ -684,6 +684,28 @@ def analyze(img: np.ndarray, grid: Grid, tpl: dict[str, TemplateSet],
     # 템플릿은 **칩의 중심(번개 무늬)** 이어야 한다. 카드 전체를 쓰면 맨 아래 행에서
     # 게임판 하단 테두리에 카드 아래쪽이 가려질 때 점수가 무너진다. 중심만 쓰면
     # 가려져도 그대로 맞는다(실측: 셀 아래 38px 가 잘려도 무사).
+    # 칩보다 **아이템 템플릿을 먼저** 본다.
+    #
+    # 실측 회귀: 판 위의 부수기 아이템(노란 발톱)이 주황칩으로 잡혔다(색 비율
+    # 0.067 -> 칩 판정). 그러면 매크로가 그걸 1순위 목표로 쫓아간다. 노란색과
+    # 주황색은 색만으로 가르기 어렵다. 템플릿으로 '이건 아이템이다'가 확인되면
+    # 그 칸은 칩 색 판정에서 빼야 한다. 템플릿이 색보다 강한 증거다.
+    item_by_template: dict[tuple[int, int], Detection] = {}
+    if tpl["item"]:
+        for r in range(N):
+            for c in range(N):
+                if cells[r][c] == Kind.OBSTACLE:
+                    continue
+                if player and (r, c) == (player.row, player.col):
+                    continue
+                x0, y0, x1, y1 = grid.cell_rect(r, c)
+                score, _, label = match_best(img[y0:y1, x0:x1], tpl["item"],
+                                             scales=ITEM_SCALES)
+                if score >= ITEM_TEMPLATE_MIN:
+                    item_by_template[(r, c)] = Detection(
+                        Kind.ITEM, r, c, score, grid.cell_rect(r, c),
+                        f"템플릿 {label} {score:.2f}")
+
     goals: list[Detection] = []
     if tpl["goal"]:
         for r in range(N):
@@ -696,6 +718,10 @@ def analyze(img: np.ndarray, grid: Grid, tpl: dict[str, TemplateSet],
                 score, _, label = match_best(img[y0:y1, x0:x1], tpl["goal"],
                                              scales=GOAL_SCALES)
                 if score >= GOAL_TEMPLATE_MIN:
+                    # 아이템 템플릿이 더 잘 맞으면 그건 칩이 아니다.
+                    other = item_by_template.get((r, c))
+                    if other is not None and other.confidence > score:
+                        continue
                     goals.append(Detection(Kind.GOAL, r, c, score,
                                            grid.cell_rect(r, c),
                                            f"템플릿 {label} {score:.2f}"))
@@ -717,6 +743,8 @@ def analyze(img: np.ndarray, grid: Grid, tpl: dict[str, TemplateSet],
                     continue
                 if player and (r, c) == (player.row, player.col):
                     continue
+                if (r, c) in item_by_template:
+                    continue      # 템플릿으로 아이템이 확인된 칸. 칩이 아니다.
                 f = _frac(m_orange, rect, inset=0.05)
                 if f >= GOAL_ORANGE_FRAC:
                     goals.append(Detection(Kind.GOAL, r, c, min(0.6, f * 6),
@@ -742,18 +770,18 @@ def analyze(img: np.ndarray, grid: Grid, tpl: dict[str, TemplateSet],
             # 예전처럼 걸친 칸을 통째로 뺀다.
             if player is not None and player.sprite is None                     and _overlaps_player(rect, player):
                 continue
+            # 템플릿 검사는 위(칩보다 먼저)에서 이미 끝냈다. 그 결과를 쓴다.
+            found = item_by_template.get((r, c))
+            if found is not None:
+                cells[r][c] = Kind.ITEM
+                detections.append(found)
+                continue
+            # 색 추측은 **아이템 템플릿이 하나도 없을 때만** 쓴다.
+            # 실측: 템플릿이 있는데도 색까지 같이 보면, 디지몬 애니메이션의 주황
+            # 픽셀이 순간적으로 새어 엉뚱한 칸이 2/15 프레임쯤 아이템으로 깜빡였다.
+            # 템플릿이 있으면 그게 더 확실한 증거이므로 색은 보지 않는다.
             if tpl["item"]:
-                # 칩과 같은 이유로 셀 높이에 맞춰 정규화하지 않는다. 판 위의 아이템
-                # 아이콘은 셀 높이의 0.73 쯤인데(실측: 64px / 88px), 0.5 로 줄이면
-                # 너무 작아져서 맞을 수가 없었다. 배율만 넓게 준다.
-                x0, y0, x1, y1 = rect
-                score, _, label = match_best(img[y0:y1, x0:x1], tpl["item"],
-                                             scales=ITEM_SCALES)
-                if score >= ITEM_TEMPLATE_MIN:
-                    cells[r][c] = Kind.ITEM
-                    detections.append(Detection(Kind.ITEM, r, c, score, rect,
-                                                f"템플릿 {label} {score:.2f}"))
-                    continue
+                continue
             if _frac(m_warm, rect) >= ITEM_WARM_FRAC:
                 cells[r][c] = Kind.ITEM
                 detections.append(Detection(Kind.ITEM, r, c, 0.5, rect, "따뜻한 색 비율"))
