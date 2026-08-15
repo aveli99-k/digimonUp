@@ -1,8 +1,18 @@
 """경로 계산.
 
 탐사는 **오른쪽으로 무한히 나아가는 미니게임**이다. 정해진 종착점이 없고,
-한 칸 움직일 때마다 게임판이 반대쪽으로 밀리면서 새 열/새 행이 들어온다.
+오른쪽으로 한 칸 움직일 때마다 게임판이 왼쪽으로 밀리면서 새 열이 들어온다.
 이 성질이 경로 규칙 전체를 결정한다.
+
+**새 지형은 오른쪽 이동으로만 들어온다.** 실측(150초 31이동)으로 확인했다.
+
+    RIGHT  19회   스크롤 18   지형변화 18
+    UP      6회   스크롤  0   지형변화  0
+    DOWN    3회   스크롤  0   지형변화  0
+    LEFT    3회   스크롤  0   지형변화  0
+
+그래서 오른쪽으로 갈 수 있는 칸이 BFS 에 하나도 없으면, 그 방 안에서는 어떤
+이동을 해도 길이 열리지 않는다. 장애물을 부수는 것이 유일한 해법이다.
 
 플레이어는 상하좌우로 한 칸씩만 움직인다. 우선순위는 다음과 같다.
 
@@ -11,8 +21,7 @@
          (걸음수 아이템은 들르지 않는다. 이동에 쓰는 자원을 얻자고 이동하는 셈이라
           본전이거나 손해다. 다만 가는 길에 걸리면 여전히 먹는다.)
   3순위  **도달 가능한 가장 오른쪽 칸**까지 가는 장애물 없는 최단 경로
-  4순위  오른쪽으로 한 칸도 못 갈 때, 세로로 최대한 움직여 새 행을 불러온다
-  5순위  오른쪽으로도 세로로도 갈 데가 없을 때만 장애물 클릭
+  4순위  오른쪽으로 한 칸도 못 가면 장애물 클릭 (세로로 헤매지 않는다)
 
 어느 경로든 **같은 길이의 갈래가 여럿이면 아이템을 밟는 쪽**을 고른다(_bfs).
 거리는 절대 늘리지 않으므로, 아이템 때문에 돌아가는 일은 2순위에서만 일어나고
@@ -97,8 +106,33 @@ PICKUP_VALUE = {Kind.GOAL: 4, Kind.ITEM: 1}
 DETOUR_SKIP_KINDS = {"steps"}
 
 
-def _bfs(cells: list[list[Kind]], start: Cell) -> tuple[dict[Cell, int], dict[Cell, Cell]]:
+# 실측으로 확정한 게임 규칙 (150초, 사이클 51회 / 오른쪽 이동 9회)
+#
+#     플레이어가 있던 열   0열 4회, 1열 47회   (2~4열은 한 번도 없다)
+#     0열에서 오른쪽       스크롤 X  (1/1)
+#     1열에서 오른쪽       스크롤 O  (8/8)
+#
+# 즉 **플레이어는 0열과 1열에만 있는다.** 1열에서 오른쪽을 누르면 플레이어가
+# 2열로 가는 것이 아니라 배경이 왼쪽으로 밀리고 플레이어는 1열에 그대로 있는다.
+# 그때 2열에 있던 것이 플레이어 자리로 들어오므로, 거기 칩이 있으면 먹힌다.
+#
+# 그래서 경로는 **0~1열만 지나갈 수 있고, 마지막 한 걸음만 2열로 들어간다.**
+# 그 한 걸음이 전진(스크롤)이다. 3열, 4열을 목표로 삼는 경로는 실행될 수 없다.
+
+# 플레이어가 서 있을 수 있는 가장 오른쪽 열 (위 실측 참고).
+PLAYER_MAX_COL = 1
+# 전진하려고 클릭하는 열. 여기를 누르면 배경이 밀린다.
+ADVANCE_COL = PLAYER_MAX_COL + 1
+
+
+def _bfs(cells: list[list[Kind]], start: Cell, max_col: int = PLAYER_MAX_COL
+         ) -> tuple[dict[Cell, int], dict[Cell, Cell]]:
     """장애물을 피해 상하좌우로만 이동하는 BFS. (거리, 이전칸) 을 돌려준다.
+
+    max_col 보다 오른쪽 열로는 걸어가지 않는다. 플레이어는 0~1열에만 있기
+    때문이다(위 실측 참고). 예전에는 5x5 전체를 걸어 다닌다고 보고 4열까지
+    가는 경로를 세웠는데, 그런 경로는 첫 걸음에서 스크롤이 나 버려지므로
+    사실상 아무 의미가 없었고 첫 걸음을 엉뚱한 방향으로 쓰게 만들었다.
 
     같은 거리의 경로가 여러 개일 때는 **지나가며 주울 게 많은 쪽**을 고른다.
     걸음수/부수기/돌진 아이템은 판 위에 놓여 있고, 밟으면 그냥 얻어진다.
@@ -120,7 +154,7 @@ def _bfs(cells: list[list[Kind]], start: Cell) -> tuple[dict[Cell, int], dict[Ce
         for _, dr, dc in DIRS:
             nxt = (r + dr, c + dc)
             nr, nc = nxt
-            if not (0 <= nr < N and 0 <= nc < N):
+            if not (0 <= nr < N and 0 <= nc <= max_col):
                 continue
             if not passable(cells[nr][nc]):
                 continue
@@ -181,6 +215,56 @@ def horizontal_triple_members(cells: list[list[Kind]]) -> set[Cell]:
             for i in range(3)}
 
 
+def _row_value(cells, scene, row: int) -> int:
+    """그 행에서 전진하면 **앞으로 들어올** 칩/아이템의 값어치 합.
+
+    2열 이상은 걸어서 갈 수 없다. 대신 그 행에 서서 전진하면 열 번호가 하나씩
+    줄어들며 결국 플레이어 자리로 들어온다. 그러니 '쫓아갈 목표'가 아니라
+    **어느 행에서 전진할지**를 정하는 근거로 써야 한다.
+    """
+    total = 0
+    for c in range(ADVANCE_COL, N):
+        kind = cells[row][c]
+        if kind == Kind.ITEM and scene.item_kinds.get((row, c), "") in DETOUR_SKIP_KINDS:
+            continue          # 걸음수는 행을 옮겨 가면서까지 챙기지 않는다
+        total += PICKUP_VALUE.get(kind, 0)
+    return total
+
+
+def _advance_for(cells, dist, prev, start: Cell, scene: Scene | None = None):
+    """전진(스크롤)을 일으키는 경로를 만든다.
+
+    전진은 **1열에 서서 2열을 클릭**하는 것 하나뿐이다. 그러려면 그 행의 2열이
+    장애물이 아니어야 한다. 그래서 '2열이 뚫린 행' 중에서 하나를 골라 세로로
+    이동한 뒤 오른쪽을 누른다.
+
+    어느 행을 고를지는 **그 행에서 앞으로 들어올 것의 값어치에서 세로 이동
+    걸음수를 뺀 값**으로 정한다. 칩(4)이면 두 칸 올라갈 값어치가 있고,
+    아이템(1)이면 한 칸도 아깝다.
+
+    반환: (경로, 고른 행, 세로 걸음수, 값어치) — 전진할 행이 없으면 None.
+    """
+    best = None
+    for r in range(N):
+        if not passable(cells[r][ADVANCE_COL]):
+            continue                      # 이 행은 2열이 막혀 전진할 수 없다
+        stand = (r, PLAYER_MAX_COL)
+        if stand not in dist:
+            continue                      # 그 행의 1열까지 걸어갈 수 없다
+        cost = dist[stand]
+        value = _row_value(cells, scene, r) if scene is not None else 0
+        # 값어치에서 걸음수를 뺀 값이 먼저다. 같으면 **주울 게 있는 쪽**을
+        # 고른다. 그래야 칩(4)은 네 칸까지, 아이템(1)은 한 칸까지 옮겨 가서 챙긴다.
+        key = (value - cost, value, -cost, -abs(r - start[0]))
+        if best is None or key > best[0]:
+            best = (key, stand, cost, value)
+    if best is None:
+        return None
+    _, stand, cost, value = best
+    path = _rebuild(prev, start, stand) + [(stand[0], ADVANCE_COL)]
+    return path, stand[0], cost, value
+
+
 def plan_route(scene: Scene, item_max_detour: int = 2) -> Plan:
     """장면을 보고 다음에 무엇을 할지 정한다.
 
@@ -201,24 +285,23 @@ def plan_route(scene: Scene, item_max_detour: int = 2) -> Plan:
     goal_cells = [(d.row, d.col) for d in scene.goals]
     if not goal_cells and scene.goal is not None:
         goal_cells = [(scene.goal.row, scene.goal.col)]
-    reachable_goals = [g for g in goal_cells if g in dist and g != start]
-    if reachable_goals:
+    # 1-a) **걸어서 닿는 칩** (0~1열). 다음 전진에 화면 밖으로 밀려나므로 급하다.
+    walkable_goals = [g for g in goal_cells if g in dist and g != start]
+    if walkable_goals:
         # 가깝고, 같으면 **더 왼쪽** 칩을 먼저 먹는다.
-        #
-        # 실측 회귀: 예전에는 같은 거리면 오른쪽 칩을 먼저 골랐다(-c[1]).
-        # 그런데 스크롤 규칙이 after[r][c] = before[r+dr][c+dc] 이므로,
-        # **오른쪽으로 한 칸 가면 열 번호가 하나씩 줄어든다.** 즉 왼쪽 칩이
-        # 화면 밖으로 떨어진다. 오른쪽 칩을 먼저 먹으러 가는 동안 왼쪽 칩은
-        # 사라지므로, 칩이 2개일 때 하나를 버리는 셈이었다.
-        #
-        # 반대로 왼쪽 칩을 먼저 먹으면, 그동안 오른쪽 칩은 판이 오른쪽으로
-        # 밀리며 화면에 더 오래 남는다. 그래서 둘 다 먹을 수 있다.
-        goal = min(reachable_goals, key=lambda c: (dist[c], c[1]))
-        extra = (f" (칩 {len(reachable_goals)}개 중 가장 가깝고 왼쪽 것부터)"
-                 if len(reachable_goals) > 1 else "")
+        # 오른쪽으로 한 칸 전진하면 열 번호가 하나씩 줄어들어 0열 칩이 화면
+        # 밖으로 떨어진다. 왼쪽 것을 먼저 먹어야 둘 다 먹는다.
+        goal = min(walkable_goals, key=lambda c: (dist[c], c[1]))
+        extra = (f" (걸어서 닿는 칩 {len(walkable_goals)}개 중 가깝고 왼쪽 것부터)"
+                 if len(walkable_goals) > 1 else "")
         return Plan(PlanKind.GOAL, _rebuild(prev, start, goal), goal,
-                    f"주황칩까지 장애물 없는 최단 경로 {dist[goal]}칸{extra}")
-    # 칩이 없거나 전부 막혀 있으면 오른쪽 전진 규칙으로 내려간다.
+                    f"주황칩까지 {dist[goal]}칸{extra}")
+
+    # 1-b) **걸어서 못 닿는 칩** (2열 이상). 이건 쫓아가는 것이 아니라
+    #      그 칩이 있는 **행에 서서 전진하면 제 발로 걸어 들어온다.**
+    #      전진할 때마다 열이 하나씩 줄어 결국 플레이어 자리로 오기 때문이다.
+    #      그래서 비용은 '그 행까지 세로로 가는 걸음수'뿐이다.
+    #      어느 행에서 전진할지는 아래 '전진' 규칙이 값어치까지 따져서 정한다.
 
     # --- 2순위 / 3순위 -----------------------------------------------------
     # 먼저 '오른쪽 전진' 경로를 계산해 둔다. 근처 아이템이 **이미 그 경로 위에**
@@ -242,22 +325,16 @@ def plan_route(scene: Scene, item_max_detour: int = 2) -> Plan:
     # 위아래로 쓰는 것은 거의 언제나 손해다. 지금 갈 수 있는 만큼 전진하고
     # 새 지형을 본 뒤에 다시 정하는 편이 낫다.
     right_plan: Plan | None = None
-    forward = [cell for cell in dist if cell != start and cell[1] > start[1]]
-    if forward:
-        def _efficiency(cell):
-            gain = cell[1] - start[1]
-            # 걸음당 전진 > 총 전진량 > 적은 걸음 > 원래 행에 가까움
-            return (gain / dist[cell], gain, -dist[cell],
-                    -abs(cell[0] - start[0]))
-
-        best = max(forward, key=_efficiency)
-        gain, cost = best[1] - start[1], dist[best]
-        reason = (f"오른쪽으로 {gain}열 전진 ({cost}걸음, "
-                  f"걸음당 {gain / cost:.2f}열)")
-        if best[1] < N - 1:
-            reason += " (한 칸 가면 새 열이 들어온다)"
-        right_plan = Plan(PlanKind.RIGHT_EDGE,
-                          _rebuild(prev, start, best), best, reason)
+    got = _advance_for(cells, dist, prev, start, scene)
+    if got is not None:
+        path, row, cost, value = got
+        reason = (f"{row}행에서 전진 (세로 {cost}칸 이동 후 오른쪽)"
+                  if cost else "제자리에서 바로 전진")
+        if value:
+            reason += f" — 그 행 앞쪽의 값어치 {value}"
+        # 칩이 들어오는 행으로 가는 것이면 '목적지' 계획으로 부른다.
+        kind = PlanKind.GOAL if value >= PICKUP_VALUE[Kind.GOAL] else PlanKind.RIGHT_EDGE
+        right_plan = Plan(kind, path, path[-1], reason)
 
     # --- 2순위: 전진 경로에서 벗어나 있는 바로 근처의 아이템 -----------------
     # 걸음수/부수기/돌진 아이템은 밟으면 그냥 얻어진다. 그런데 '가는 길에 있으면
@@ -287,20 +364,15 @@ def plan_route(scene: Scene, item_max_detour: int = 2) -> Plan:
     if right_plan is not None:
         return right_plan
 
-    # --- 4순위: 세로로 움직여 새 지형을 불러온다 ----------------------------
-    # 오른쪽으로 한 칸도 못 가는 '주머니'에 갇힌 경우다. 세로 이동에서도 게임판이
-    # 스크롤하면서 **새 행이 들어오므로**, 위아래로 최대한 움직이면 오른쪽으로
-    # 이어지는 길이 새로 나타날 수 있다. 장애물을 부수는 것보다 이쪽이 먼저다.
-    vertical = [cell for cell in dist if cell[0] != start[0]]
-    if vertical:
-        best = max(vertical, key=lambda cell: (abs(cell[0] - start[0]), -dist[cell],
-                                               cell[1]))
-        return Plan(PlanKind.SCROLL_VERTICAL, _rebuild(prev, start, best), best,
-                    f"오른쪽으로 갈 길이 없어 세로로 {abs(best[0] - start[0])}칸 이동 "
-                    f"(새 행이 들어오면 길이 열린다)")
-
-    # --- 5순위: 장애물 파괴 ----------------------------------------------
-    # 오른쪽으로도 세로로도 갈 데가 없는, 완전히 갇힌 경우다.
+    # --- 4순위: 장애물 파괴 ----------------------------------------------
+    # 여기까지 왔다는 것은 BFS 로 갈 수 있는 칸 중에 지금보다 오른쪽인 칸이
+    # **하나도 없다**는 뜻이다. 장애물 없는 우회로는 3순위에서 이미 다 찾아봤다.
+    #
+    # 예전에는 이럴 때 세로로 최대한 움직였다. "세로 이동에서도 판이 스크롤하며
+    # 새 행이 들어온다"고 봤기 때문인데, **사실이 아니었다.** 실측 150초에서
+    # 세로·왼쪽 이동 12회 중 지형이 바뀐 것은 0회였고(오른쪽은 19회 중 18회),
+    # 이 계획으로 실행된 이동 2회도 전부 지형 변화가 없었다.
+    # 갇힌 방 안을 걸어 다녀 봐야 걸음수만 쓴다. 장애물을 부수는 수밖에 없다.
     middles = horizontal_triples(cells)
     members = horizontal_triple_members(cells)
     candidates: list[tuple[int, int, int, Cell]] = []

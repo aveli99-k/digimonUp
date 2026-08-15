@@ -61,86 +61,93 @@ def test_목적지_경로가_장애물을_통과하지_않는다():
     assert not (set(plan.path) & blocked)
 
 
-# ------------------------------------ 2순위: 오른쪽으로 갈 수 있는 데까지
-def test_목적지가_없으면_오른쪽으로_전진한다():
+# ------------------------------------ 2순위: 전진 (1열에 서서 2열을 클릭)
+def test_전진은_2열을_클릭하는_한_걸음이다():
+    """실측 모델: 플레이어는 0~1열에만 있고, 1열에서 오른쪽을 누르면 배경이 밀린다.
+
+    그래서 전진 경로는 '3열, 4열까지 걸어간다'가 아니라 **2열 클릭 한 번**이다.
+    예전에는 4열까지 가는 경로를 세웠는데, 첫 걸음에서 스크롤이 나 나머지가
+    통째로 버려졌고 그 바람에 첫 걸음을 엉뚱한 방향으로 쓰곤 했다.
+    """
     plan = plan_route(make_scene([
         ".....",
-        "..P..",
+        ".P...",
         ".....",
         ".....",
         ".....",
     ]))
     assert plan.kind == PlanKind.RIGHT_EDGE
-    assert plan.path[-1][1] == N - 1
-    assert plan.moves == ["RIGHT", "RIGHT"]
+    assert plan.moves == ["RIGHT"]
+    assert plan.path == [(1, 1), (1, 2)]
 
 
-def test_끝_열에_못_닿아도_갈_수_있는_만큼_오른쪽으로_간다():
-    """탐사는 무한 우측 진행이라, 한 칸만 가도 새 열이 들어와 길이 이어진다.
+def test_0열에_있으면_먼저_1열로_간다():
+    """0열에서 오른쪽을 눌러도 스크롤은 안 난다(실측 1/1). 1열로 붙는 걸음이다."""
+    plan = plan_route(make_scene([
+        ".....",
+        "P....",
+        ".....",
+        ".....",
+        ".....",
+    ]))
+    assert plan.kind == PlanKind.RIGHT_EDGE
+    assert plan.path[:2] == [(1, 0), (1, 1)]
 
-    '오른쪽 끝 열(col 4)에 닿을 수 있는가'만 보면, 사실 전진할 수 있는데도
-    갇혔다고 판단해 장애물을 두드리게 된다. 실제로 그런 판에서 멈췄었다.
+
+def test_2열이_막히면_뚫린_행으로_옮겨서_전진한다():
+    """세로 이동은 '새 지형을 부르려고'가 아니라 **전진할 수 있는 행으로 가려고**
+    하는 것이다. 이건 낭비가 아니라 꼭 필요한 걸음이다."""
+    scene = make_scene([
+        ".....",
+        ".PX..",
+        ".....",
+        ".....",
+        ".....",
+    ])
+    plan = plan_route(scene)
+    assert plan.kind == PlanKind.RIGHT_EDGE
+    assert plan.target[1] == 2, "전진은 2열 클릭이어야 합니다"
+    assert plan.target[0] != 1, "2열이 막힌 행에서 전진할 수는 없습니다"
+    assert plan.moves[-1] == "RIGHT"
+    assert all(scene.cells[r][c] != Kind.OBSTACLE for r, c in plan.path)
+
+
+def test_한_줄만_뚫려_있어도_전진한다():
+    scene = make_scene([
+        "XXXXX",
+        "XXXXX",
+        ".P...",
+        "XXXXX",
+        "XXXXX",
+    ])
+    plan = plan_route(scene)
+    assert plan.kind == PlanKind.RIGHT_EDGE
+    assert plan.path == [(2, 1), (2, 2)]
+
+
+def test_전진할_수_있는_가장_가까운_행으로_간다():
+    scene = make_scene([
+        "..X..",
+        "..X..",
+        ".PX..",
+        "..X..",
+        ".....",
+    ])
+    plan = plan_route(scene)
+    assert plan.kind == PlanKind.RIGHT_EDGE
+    assert plan.path == [(2, 1), (3, 1), (4, 1), (4, 2)], \
+        f"2열이 뚫린 4행으로 내려가 전진해야 합니다: {plan.path}"
+
+
+# ------------------------------- 4순위: 오른쪽이 막히면 바로 장애물을 부순다
+def test_오른쪽으로_한_칸도_못_가면_세로로_헤매지_않고_부순다():
+    """실측: 새 지형은 오른쪽 이동으로만 들어온다.
+
+    150초 31이동에서 RIGHT 는 19회 중 18회 지형이 바뀌었고, UP/DOWN/LEFT 는
+    12회 전부 0회였다. 그러니 오른쪽으로 갈 칸이 없는 방 안에서 위아래로
+    걸어 다니는 것은 걸음수만 쓰는 헛일이다.
     """
     scene = make_scene([
-        ".XX..",
-        "..X.X",
-        "P.X..",
-        "XX...",
-        ".X.X.",
-    ])
-    plan = plan_route(scene)
-    assert plan.kind == PlanKind.RIGHT_EDGE, "전진할 수 있는데 다른 판단을 했습니다"
-    assert plan.target == (2, 1)
-    assert plan.moves == ["RIGHT"]
-    assert all(scene.cells[r][c] != Kind.OBSTACLE for r, c in plan.path)
-
-
-def test_우회할_수_있으면_장애물을_부수지_않는다():
-    """오른쪽이 막혀 있어도 위/아래로 돌아갈 수 있으면 파괴하지 않는다."""
-    scene = make_scene([
-        ".....",
-        "..PXX",
-        ".....",
-        ".....",
-        ".....",
-    ])
-    plan = plan_route(scene)
-    assert plan.kind == PlanKind.RIGHT_EDGE
-    assert plan.path[-1][1] == N - 1
-    assert all(scene.cells[r][c] != Kind.OBSTACLE for r, c in plan.path)
-
-
-def test_한_줄만_뚫려_있어도_우회로를_찾는다():
-    scene = make_scene([
-        "XXXXX",
-        "XXXXX",
-        "..P..",
-        "XXXXX",
-        "XXXXX",
-    ])
-    plan = plan_route(scene)
-    assert plan.kind == PlanKind.RIGHT_EDGE
-    assert plan.path[-1] == (2, 4)
-
-
-def test_먼_길로_돌아가야_해도_부수지_않는다():
-    scene = make_scene([
-        "....X",
-        "XXX.X",
-        "..P.X",
-        "XXX.X",
-        "....X",
-    ])
-    plan = plan_route(scene)
-    # 끝 열은 전부 막혔지만 col 3 까지는 갈 수 있다 -> 그만큼 전진한다
-    assert plan.kind == PlanKind.RIGHT_EDGE
-    assert plan.target[1] == 3
-
-
-# ------------------------------- 3순위: 세로로 움직여 새 지형을 불러온다
-def test_오른쪽으로_한_칸도_못_가면_세로로_움직인다():
-    """세로 이동에서도 판이 스크롤하며 새 행이 들어온다. 파괴보다 먼저다."""
-    scene = make_scene([
         "..X..",
         "..X..",
         ".PX..",
@@ -148,21 +155,30 @@ def test_오른쪽으로_한_칸도_못_가면_세로로_움직인다():
         "..X..",
     ])
     plan = plan_route(scene)
-    assert plan.kind == PlanKind.SCROLL_VERTICAL
-    assert plan.target[0] != 2, "세로로 움직여야 합니다"
-    assert all(scene.cells[r][c] != Kind.OBSTACLE for r, c in plan.path)
+    assert plan.kind == PlanKind.BREAK_OBSTACLE, \
+        f"세로로 헤매지 말고 부숴야 합니다 (지금 계획: {plan.kind.value})"
+    assert scene.cells[plan.target[0]][plan.target[1]] == Kind.OBSTACLE
 
 
-def test_세로_이동은_가장_먼_행까지_간다():
+def test_위아래로_돌아가면_오른쪽에_닿을_때는_부수지_않는다():
+    """장애물 없는 우회로가 있으면 언제나 그쪽이 먼저다.
+
+    아래 판은 (4,2) 가 뚫려 있어 내려갔다 돌아가면 오른쪽에 닿는다.
+    '오른쪽으로 한 칸도 못 간다'와 '바로 오른쪽이 막혔다'를 헷갈리면
+    멀쩡한 길을 두고 장애물을 두드리게 된다.
+    """
     scene = make_scene([
         "..X..",
         "..X..",
         ".PX..",
         "..X..",
-        "..X..",
+        ".....",
     ])
     plan = plan_route(scene)
-    assert abs(plan.target[0] - 2) == 2
+    assert plan.kind == PlanKind.RIGHT_EDGE, \
+        f"우회로가 있는데 {plan.kind.value} 를 골랐습니다"
+    assert plan.target[1] > 1, "오른쪽으로 나아가야 합니다"
+    assert all(scene.cells[r][c] != Kind.OBSTACLE for r, c in plan.path)
 
 
 # ----------------------------- 4순위: 완전히 갇혔을 때만 장애물 클릭
@@ -257,15 +273,14 @@ def test_플레이어를_못_찾으면_아무것도_하지_않는다():
 
 def test_아이템과_목적지는_지나갈_수_있다():
     scene = make_scene([
-        "P.i..",
+        "Pi...",
         ".....",
         ".....",
         ".....",
         ".....",
     ])
     plan = plan_route(scene)
-    assert plan.path[-1][1] == N - 1
-    assert (0, 2) in plan.path
+    assert (0, 1) in plan.path, "아이템 칸을 피해 가면 안 됩니다"
     assert pathfind.passable(Kind.ITEM)
     assert pathfind.passable(Kind.GOAL)
     assert not pathfind.passable(Kind.OBSTACLE)
@@ -283,18 +298,18 @@ def test_경로를_방향_목록으로_바꾼다():
     assert plan.moves.count("DOWN") == 2 and plan.moves.count("RIGHT") == 2
 
 
-def test_목적지가_막혀_있으면_오른쪽_전진으로_내려간다():
+def test_멀리_있는_칩은_그_행에_서서_전진해_받는다():
+    """2열 이상은 걸어갈 수 없다. 그 행에 서서 전진하면 칩이 걸어 들어온다."""
     scene = make_scene([
         ".....",
-        ".P.X.",
-        "...XG",
-        "...X.",
+        ".P...",
+        "....G",
+        ".....",
         ".....",
     ])
     plan = plan_route(scene)
-    # 목적지 (2,4) 는 X 벽 뒤에 있지만 아래로 돌아가면 도달 가능하다
     assert plan.kind == PlanKind.GOAL
-    assert plan.path[-1] == (2, 4)
+    assert plan.path == [(1, 1), (2, 1), (2, 2)],         f"칩이 있는 2행으로 내려가 전진해야 합니다: {plan.path}"
 
 
 # ------------------------------------- 주황칩(필수 아이템)이 여러 개인 경우
@@ -321,7 +336,7 @@ def test_주황칩이_여러_개면_가장_가까운_것부터_먹는다():
     ])
     plan = plan_route(scene)
     assert plan.kind == PlanKind.GOAL
-    assert plan.target == (1, 3), "더 가까운 칩을 골라야 합니다"
+    assert plan.target == (1, 2),         f"같은 행(1행) 칩이 공짜인데 3행까지 내려갔습니다: {plan.target}"
 
 
 def test_칩이_같은_거리면_더_오른쪽_칩을_고른다():
@@ -383,31 +398,29 @@ def _plan_for(rows):
     return plan_route(scene)
 
 
-def test_같은_거리면_아이템을_밟는_길로_간다():
-    """칩까지 두 갈래 길이 똑같이 3칸이면, 아이템이 놓인 쪽으로 간다."""
+def test_값어치가_같으면_덜_움직이는_행을_고른다():
+    """칩이 두 행에 있으면 가까운 행에서 전진한다."""
     plan = _plan_for([
-        ".i..G",      # 위로 돌면 아이템을 밟는다
-        "P....",
-        ".....",
+        "....G",
+        ".P...",
+        "..G..",
         ".....",
         ".....",
     ])
-    # (0,4) 칩까지 최단 5칸. 위 경로는 (0,1) 아이템을 지난다.
-    assert (0, 1) in plan.path, f"아이템을 지나는 길을 고르지 않았습니다: {plan.path}"
-    assert len(plan.path) - 1 == 5, "최단 거리가 아닙니다"
+    assert plan.path[-1][0] in (0, 2)
+    assert len(plan.path) - 1 == 2, f"한 칸 옆 행을 두고 멀리 갔습니다: {plan.path}"
 
 
 def test_아이템을_먹으려고_돌아가지_않는다():
     """아이템이 경로 밖에 있으면 무시한다. 걸음수가 늘어나면 안 된다."""
     plan = _plan_for([
         ".....",
-        "P...G",      # 칩까지 4칸 직진
+        ".P..G",      # 1행에서 전진하면 칩이 들어온다
         ".....",
-        "..i..",      # 아이템은 두 칸 아래. 먹으러 가면 4칸이 더 든다
         ".....",
+        "..i..",      # 아이템은 세 칸 아래. 값어치 1 로는 갈 값어치가 없다
     ])
-    assert len(plan.path) - 1 == 4, f"돌아갔습니다: {plan.path}"
-    assert (3, 2) not in plan.path
+    assert plan.path == [(1, 1), (1, 2)], f"돌아갔습니다: {plan.path}"
 
 
 def test_아이템_때문에_장애물을_부수지_않는다():
@@ -439,13 +452,13 @@ def test_가는_길의_다른_칩도_주워간다():
 def test_아이템이_없으면_예전과_같다():
     plan = _plan_for([
         ".....",
-        "P...G",
+        ".P..G",
         ".....",
         ".....",
         ".....",
     ])
     assert plan.kind == PlanKind.GOAL
-    assert len(plan.path) - 1 == 4
+    assert plan.path == [(1, 1), (1, 2)]
 
 
 # ------------------- 아이템 들르기 (걸음수는 제외) — 실측 회귀
@@ -472,8 +485,7 @@ def test_전진_경로에서_벗어난_아이템은_들른다():
         ".P...",
         ".....",
     ], {(2, 2): "dash"})
-    assert plan.kind == PlanKind.ITEM
-    assert plan.path[-1] == (2, 2)
+    assert plan.path == [(3, 1), (2, 1), (2, 2)],         f"한 칸 위의 돌진 아이템을 지나쳤습니다: {plan.path}"
 
 
 def test_걸음수_아이템은_들르지_않는다():
@@ -510,8 +522,7 @@ def test_이미_전진_경로_위의_아이템이면_거기서_멈추지_않는�
         ".....",
     ], {(1, 2): "dash"})
     assert plan.kind == PlanKind.RIGHT_EDGE
-    assert plan.path[-1][1] == 4, f"아이템 칸에서 멈췄습니다: {plan.path}"
-    assert (1, 2) in plan.path
+    assert plan.path == [(1, 1), (1, 2)], f"제자리 전진이면 됩니다: {plan.path}"
 
 
 def test_아이템_들르기를_끌_수_있다():
@@ -572,10 +583,10 @@ def test_같은_거리의_칩이면_왼쪽_것부터_먹는다():
 def test_더_가까운_칩이_있으면_거리가_우선이다():
     """왼쪽 우선은 어디까지나 '같은 거리일 때' 규칙이다."""
     plan = _plan_chips([
+        "G....",
         ".....",
-        ".....",
-        "G..PG",       # 왼쪽은 3칸, 오른쪽은 1칸
+        ".P...",
         ".....",
         ".....",
     ])
-    assert plan.target == (2, 4), f"가까운 칩을 두고 멀리 갔습니다: {plan.target}"
+    assert plan.target == (0, 0),         f"걸어서 닿는 칩은 먼저 먹어야 합니다: {plan.target}"
