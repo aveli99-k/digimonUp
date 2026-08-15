@@ -530,3 +530,52 @@ def test_멀리_있는_아이템은_들르지_않는다():
         ".....",
     ], {(0, 4): "dash"}, item_max_detour=2)
     assert plan.kind == PlanKind.RIGHT_EDGE
+
+
+# --------------------- 칩이 여러 개일 때 어느 것부터 (실측 회귀)
+def _plan_chips(rows):
+    sym = {".": Kind.EMPTY, "P": Kind.PLAYER, "G": Kind.GOAL,
+           "X": Kind.OBSTACLE, "i": Kind.ITEM}
+    cells = [[sym[ch] for ch in row] for row in rows]
+    player, goals = None, []
+    for r in range(5):
+        for c in range(5):
+            if rows[r][c] == "P":
+                player = Detection(Kind.PLAYER, r, c, 1.0)
+            elif rows[r][c] == "G":
+                goals.append(Detection(Kind.GOAL, r, c, 1.0))
+    scene = Scene(grid=None, cells=cells, player=player,
+                  goal=goals[0] if goals else None, goals=goals)
+    return plan_route(scene)
+
+
+def test_같은_거리의_칩이면_왼쪽_것부터_먹는다():
+    """실측 회귀: 칩이 2개일 때 하나를 버리는 문제.
+
+    스크롤 규칙이 after[r][c] = before[r+dr][c+dc] 라서, 오른쪽으로 한 칸 가면
+    열 번호가 하나씩 줄어든다. 즉 **왼쪽 칩이 화면 밖으로 떨어진다.**
+    오른쪽 칩을 먼저 먹으러 가는 동안 왼쪽 칩은 사라지므로 하나를 버리게 된다.
+
+    왼쪽 것부터 먹으면 그동안 오른쪽 칩은 판이 밀리며 더 오래 남아 둘 다 먹는다.
+    """
+    plan = _plan_chips([
+        ".....",
+        ".....",
+        "G.P.G",       # 양쪽으로 2칸씩. 왼쪽(2,0)이 먼저 사라진다
+        ".....",
+        ".....",
+    ])
+    assert plan.kind == PlanKind.GOAL
+    assert plan.target == (2, 0), f"오른쪽 칩을 먼저 골랐습니다: {plan.target}"
+
+
+def test_더_가까운_칩이_있으면_거리가_우선이다():
+    """왼쪽 우선은 어디까지나 '같은 거리일 때' 규칙이다."""
+    plan = _plan_chips([
+        ".....",
+        ".....",
+        "G..PG",       # 왼쪽은 3칸, 오른쪽은 1칸
+        ".....",
+        ".....",
+    ])
+    assert plan.target == (2, 4), f"가까운 칩을 두고 멀리 갔습니다: {plan.target}"

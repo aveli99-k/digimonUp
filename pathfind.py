@@ -203,9 +203,19 @@ def plan_route(scene: Scene, item_max_detour: int = 2) -> Plan:
         goal_cells = [(scene.goal.row, scene.goal.col)]
     reachable_goals = [g for g in goal_cells if g in dist and g != start]
     if reachable_goals:
-        # 가깝고, 같으면 더 오른쪽에 있는 칩을 먼저
-        goal = min(reachable_goals, key=lambda c: (dist[c], -c[1]))
-        extra = f" (칩 {len(goal_cells)}개 중 가장 가까운 것)" if len(goal_cells) > 1 else ""
+        # 가깝고, 같으면 **더 왼쪽** 칩을 먼저 먹는다.
+        #
+        # 실측 회귀: 예전에는 같은 거리면 오른쪽 칩을 먼저 골랐다(-c[1]).
+        # 그런데 스크롤 규칙이 after[r][c] = before[r+dr][c+dc] 이므로,
+        # **오른쪽으로 한 칸 가면 열 번호가 하나씩 줄어든다.** 즉 왼쪽 칩이
+        # 화면 밖으로 떨어진다. 오른쪽 칩을 먼저 먹으러 가는 동안 왼쪽 칩은
+        # 사라지므로, 칩이 2개일 때 하나를 버리는 셈이었다.
+        #
+        # 반대로 왼쪽 칩을 먼저 먹으면, 그동안 오른쪽 칩은 판이 오른쪽으로
+        # 밀리며 화면에 더 오래 남는다. 그래서 둘 다 먹을 수 있다.
+        goal = min(reachable_goals, key=lambda c: (dist[c], c[1]))
+        extra = (f" (칩 {len(reachable_goals)}개 중 가장 가깝고 왼쪽 것부터)"
+                 if len(reachable_goals) > 1 else "")
         return Plan(PlanKind.GOAL, _rebuild(prev, start, goal), goal,
                     f"주황칩까지 장애물 없는 최단 경로 {dist[goal]}칸{extra}")
     # 칩이 없거나 전부 막혀 있으면 오른쪽 전진 규칙으로 내려간다.
@@ -218,19 +228,36 @@ def plan_route(scene: Scene, item_max_detour: int = 2) -> Plan:
     # 게임판이 밀리면서 **새 열이 하나 들어온다**. 그래서 지금 보이는 5x5 안에서
     # 맨 오른쪽 열(col 4)에 못 닿는다고 막힌 것이 아니다.
     # 따라서 목표는 '오른쪽 끝 열'이 아니라 **도달 가능한 가장 오른쪽 칸**이다.
+    # 목표는 **걸음당 전진이 가장 좋은 칸**이다. '가장 오른쪽 칸'이 아니다.
+    #
+    # 실측 회귀: 예전에는 거리를 무시하고 제일 오른쪽 칸을 목표로 삼았다.
+    # 그러면 6걸음을 들여 3열을 얻는 경로(0.50 열/걸음)를 고르는데, 바로 옆에
+    # 2걸음에 2열을 얻는 길(1.00)이 있었다. 실제 주행에서 오른쪽 전진 계획
+    # 17개 중 5개가 그랬고, 평균 0.112 열/걸음을 손해 보고 있었다.
+    # 그 손해가 'UP UP UP' 처럼 세로로 몰려 움직이는 모습으로 나타났다
+    # (전체 이동의 34%가 세로였다).
+    #
+    # 게다가 한 칸 움직일 때마다 판이 스크롤해서 남은 경로를 버리고 다시
+    # 계획하므로, 사실상 **첫 한 걸음만 의미가 있다.** 먼 목표를 위해 첫 걸음을
+    # 위아래로 쓰는 것은 거의 언제나 손해다. 지금 갈 수 있는 만큼 전진하고
+    # 새 지형을 본 뒤에 다시 정하는 편이 낫다.
     right_plan: Plan | None = None
-    reachable = [cell for cell in dist if cell != start]
-    if reachable:
-        # 더 오른쪽 > 더 가까움 > 원래 행에 가까움 순으로 고른다.
-        best = max(reachable, key=lambda cell: (cell[1], -dist[cell],
-                                                -abs(cell[0] - start[0])))
-        if best[1] > start[1]:
-            reason = (f"오른쪽으로 {best[1] - start[1]}열 전진 "
-                      f"(도달 가능한 가장 오른쪽 칸까지 {dist[best]}칸)")
-            if best[1] < N - 1:
-                reason += " (한 칸 가면 새 열이 들어온다)"
-            right_plan = Plan(PlanKind.RIGHT_EDGE,
-                              _rebuild(prev, start, best), best, reason)
+    forward = [cell for cell in dist if cell != start and cell[1] > start[1]]
+    if forward:
+        def _efficiency(cell):
+            gain = cell[1] - start[1]
+            # 걸음당 전진 > 총 전진량 > 적은 걸음 > 원래 행에 가까움
+            return (gain / dist[cell], gain, -dist[cell],
+                    -abs(cell[0] - start[0]))
+
+        best = max(forward, key=_efficiency)
+        gain, cost = best[1] - start[1], dist[best]
+        reason = (f"오른쪽으로 {gain}열 전진 ({cost}걸음, "
+                  f"걸음당 {gain / cost:.2f}열)")
+        if best[1] < N - 1:
+            reason += " (한 칸 가면 새 열이 들어온다)"
+        right_plan = Plan(PlanKind.RIGHT_EDGE,
+                          _rebuild(prev, start, best), best, reason)
 
     # --- 2순위: 전진 경로에서 벗어나 있는 바로 근처의 아이템 -----------------
     # 걸음수/부수기/돌진 아이템은 밟으면 그냥 얻어진다. 그런데 '가는 길에 있으면
