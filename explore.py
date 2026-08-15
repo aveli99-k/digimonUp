@@ -79,6 +79,9 @@ class ExploreConfig:
     # 실측: 3장 x 0.18초면 진짜 칸 0.296 / 나머지 24칸 0.000 으로 확실히 갈렸다.
     motion_frames: int = 3
     motion_gap_sec: float = 0.18
+    # 칩 획득 이펙트가 보일 때, 묶음을 새로 읽기 전에 기다리는 시간.
+    # 실측: 이펙트 칩은 전부 0.72초 안에 사라졌다.
+    ghost_settle_sec: float = 0.8
 
     cycle_pause_sec: float = 0.25      # 전체 재인식 사이의 쉬는 시간
     lost_retry_sec: float = 0.8        # 인식 실패 시 재시도 간격
@@ -183,6 +186,11 @@ class ExploreEngine:
         # 자세한 근거는 chiptrack.py 참고.
         self.chips = chiptrack.ChipTracker(cols=N)
         self._scrolls_since = 0
+        # 마지막 움직임 검사에서 그림이 움직이던 칸들.
+        self._moving_cells: set = set()
+        # 이번 사이클에 이펙트로 의심된 칩 수. 있으면 계획을 세우지 않고
+        # 화면이 가라앉기를 기다렸다 다시 본다.
+        self._ghost_suspect = 0
 
     # ---------------------------------------------------------------- 정지
     def stop(self) -> None:
@@ -433,11 +441,15 @@ class ExploreEngine:
                     return None
                 frames.append(shot)
             recent = frames[-self.cfg.motion_frames:]
-            busy, cell, ratio = motion_report(recent, grid)
+            busy, cell, ratio, ratios = motion_report(recent, grid)
             if busy > MOTION_MAX_CELLS:
                 self._board_animating = True
                 continue                # 아직 스크롤 중이다. 한 번 더 기다린다.
             self._board_animating = False
+            # 판이 가라앉은 지금 움직이는 칸 = 디지몬 + 연출.
+            # 거기서 잡힌 칩은 획득 이펙트다(_confirm_goals 에서 쓴다).
+            self._moving_cells = {c for c, v in ratios.items()
+                                  if v >= MOTION_CELL_MIN}
             if cell is not None and ratio >= MOTION_CELL_MIN:
                 return cell
             return None
@@ -460,6 +472,20 @@ class ExploreEngine:
             self.chips.collected_at((scene.player.row, scene.player.col))
 
         detected = {(d.row, d.col) for d in scene.goals}
+
+        # **움직이는 칸의 칩은 이펙트다.**
+        #
+        # 판이 가라앉은 지금 움직이는 것은 디지몬과 연출뿐이다. 판 위에 놓인
+        # 칩은 가만히 있는다. 실측(0.12초 간격 161프레임): 잡힌 칩 자리 15건이
+        # 전부 0.72초 안에 사라졌고 15건 모두 움직인 프레임이 있었다.
+        # 디지몬이 선 칸은 늘 움직이므로 빼고 본다.
+        player_cell = ((scene.player.row, scene.player.col)
+                       if scene.player is not None else None)
+        wiggling = {c for c in (self._moving_cells - {player_cell}) if c in detected}
+        if wiggling:
+            self._ghost_suspect += 1
+            detected -= wiggling
+
         was_locked = self.chips.locked
         valid = self.chips.update(detected)
 
@@ -467,7 +493,9 @@ class ExploreEngine:
             self.log(f"[칩] 묶음을 새로 읽었습니다: {sorted(valid)} "
                      f"(다 먹을 때까지 새 칩은 보지 않습니다)")
 
-        ignored = detected - valid
+        # 판에서 지울 칸은 **검출된 것 전부** 를 기준으로 따진다.
+        # 움직여서 뺀 칩(wiggling)도 판에서 지워야 경로 계산이 안 쫓아간다.
+        ignored = (detected | wiggling) - valid
         scene.goals = [d for d in scene.goals if (d.row, d.col) in valid]
         for r, c in ignored:
             if scene.cells[r][c] == Kind.GOAL:
@@ -479,9 +507,14 @@ class ExploreEngine:
                 scene.cells[r][c] = Kind.GOAL
                 scene.goals.append(Detection(Kind.GOAL, r, c, 0.5,
                                              note="추적 중 (이번 프레임은 못 봄)"))
-        if ignored:
+        if wiggling:
             scene.notes.append(
-                f"추적 중인 묶음에 없는 칩 {sorted(ignored)} 은(는) 획득 이펙트로 "
+                f"칩 {sorted(wiggling)} 은(는) 그림이 움직이고 있습니다. "
+                f"획득 이펙트로 보고 무시합니다.")
+        rest = ignored - wiggling
+        if rest:
+            scene.notes.append(
+                f"추적 중인 묶음에 없는 칩 {sorted(rest)} 은(는) 획득 이펙트로 "
                 f"보고 무시합니다.")
 
     # ------------------------------------------------- 아이템 개수 모니터링
@@ -821,7 +854,16 @@ class ExploreEngine:
                                 self.cfg.orange_goal_without_template,
                                 motion_cell=motion)
                 # 칩 획득 이펙트로 흩어진 칩을 목표로 삼지 않는다.
+                self._ghost_suspect = 0
                 self._confirm_goals(scene)
+                if self._ghost_suspect and not self.chips.locked:
+                    # 이펙트가 뜬 화면에서 **묶음을 새로 읽으려던 참**이다.
+                    # 이때 읽으면 이펙트를 진짜 칩으로 잠가 버린다. 잠근 뒤로는
+                    # 검출로 고칠 수도 없으니, 가라앉을 때까지 기다렸다 다시 본다.
+                    self.log("[칩] 획득 이펙트가 보입니다. 화면이 가라앉은 뒤 "
+                             "다시 읽습니다.")
+                    self._sleep(self.cfg.ghost_settle_sec)
+                    continue
                 # 빠른 추적이 장애물/칩/아이템을 플레이어로 잡지 않게 넘겨준다.
                 self._not_player = (
                     {(r, c) for r in range(N) for c in range(N)

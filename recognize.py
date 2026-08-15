@@ -396,7 +396,7 @@ def motion_report(frames: list[np.ndarray], grid: Grid):
      그 유령 칩을 먹으러 왼쪽으로 갔다. 정지 화면에서는 한 번도 안 나온다.)
     """
     if len(frames) < 2 or grid is None:
-        return 0, None, 0.0
+        return 0, None, 0.0, {}
     grays = [cv2.cvtColor(f, cv2.COLOR_BGR2GRAY) for f in frames]
     acc = None
     for a, b in zip(grays, grays[1:]):
@@ -411,7 +411,26 @@ def motion_report(frames: list[np.ndarray], grid: Grid):
             ratios[(r, c)] = float(moved[y0:y1, x0:x1].mean())
     busy = sum(1 for v in ratios.values() if v >= MOTION_CELL_MIN)
     cell, best = max(ratios.items(), key=lambda kv: kv[1])
-    return busy, cell, best
+    return busy, cell, best, ratios
+
+
+def moving_cells(frames: list[np.ndarray], grid: Grid) -> set[tuple[int, int]]:
+    """지금 **그림이 움직이고 있는** 칸들.
+
+    판이 멈춰 있을 때 움직이는 것은 디지몬과 **연출**뿐이다. 판 위에 놓인
+    칩·아이템·장애물은 가만히 있는다. 그래서 움직이는 칸에서 잡힌 칩은
+    칩 획득 이펙트로 흩어지는 칩이다.
+
+    실측(0.12초 간격 161프레임): 잡힌 칩 자리 15건이 전부 0.72초 안에
+    사라졌고, 15건 모두 움직인 프레임이 있었다.
+
+    주의: 스크롤 중에는 온 화면이 움직이므로 이 값을 쓰면 안 된다.
+    부르는 쪽에서 판이 가라앉은 뒤에 쓴다(_board_animating).
+    """
+    if len(frames) < 2 or grid is None:
+        return set()
+    _, _, _, ratios = motion_report(frames, grid)
+    return {cell for cell, v in ratios.items() if v >= MOTION_CELL_MIN}
 
 
 def motion_player_cell(frames: list[np.ndarray], grid: Grid
@@ -429,7 +448,7 @@ def motion_player_cell(frames: list[np.ndarray], grid: Grid
 
     반환: ((행, 열), 움직임 비율) — 판이 통째로 움직이는 중이면 None.
     """
-    busy, cell, best = motion_report(frames, grid)
+    busy, cell, best, _ = motion_report(frames, grid)
     if cell is None or best < MOTION_CELL_MIN:
         return None
     if busy > MOTION_MAX_CELLS:

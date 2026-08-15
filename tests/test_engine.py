@@ -742,3 +742,44 @@ def test_묶음을_다_먹으면_다시_읽는다():
 
     _lock(eng, [(3, 4), (1, 3)])          # 새 묶음을 읽는다
     assert eng.chips.chips == {(3, 4), (1, 3)}
+
+
+def test_그림이_움직이는_칸의_칩은_이펙트로_본다():
+    """실측(0.12초 간격 161프레임): 잡힌 칩 자리 15건이 전부 0.72초 안에
+    사라졌고, 15건 모두 움직인 프레임이 있었다.
+
+    판이 가라앉았을 때 움직이는 것은 디지몬과 연출뿐이다. 판에 놓인 칩은
+    가만히 있는다.
+    """
+    from recognize import Kind
+    eng = _engine([])
+    _lock(eng, [(1, 3)])
+
+    eng._moving_cells = {(4, 0), (4, 1)}         # 이펙트가 날아다니는 칸
+    sc = _scene_with_goals([(1, 3), (4, 0), (4, 1)])
+    eng._confirm_goals(sc)
+    assert sorted((d.row, d.col) for d in sc.goals) == [(1, 3)]
+    assert sc.cells[4][0] is Kind.EMPTY
+
+
+def test_디지몬이_선_칸은_늘_움직이므로_빼고_본다():
+    """디지몬은 제자리 애니메이션이 돌아 언제나 움직이는 칸이다."""
+    from recognize import Detection, Kind
+    eng = _engine([])
+    _lock(eng, [(2, 1)])
+
+    sc = _scene_with_goals([(2, 1)])
+    sc.player = Detection(Kind.PLAYER, 0, 0, 1.0)
+    eng._moving_cells = {(0, 0), (2, 1)}
+    eng._confirm_goals(sc)
+    assert eng._ghost_suspect == 1, "디지몬 칸이 아닌 (2,1) 은 의심해야 합니다"
+
+
+def test_이펙트가_의심되면_묶음을_잠그지_않는다():
+    """이펙트가 뜬 화면에서 잠그면 이펙트를 진짜 칩으로 굳혀 버린다."""
+    eng = _engine([])
+    eng._moving_cells = {(3, 2)}
+    for _ in range(3):
+        eng._confirm_goals(_scene_with_goals([(3, 2)]))
+    assert not eng.chips.locked
+    assert eng._ghost_suspect > 0
