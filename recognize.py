@@ -346,12 +346,18 @@ FOOT_LIFT = 0.20        # 셀 높이 대비
 # 템플릿을 셀 높이의 몇 배로 정규화할지. 플레이어 스프라이트는 셀보다 크다
 # (실측: 템플릿 높이 / 셀 높이 = 1.41~1.55). 이 값을 1.15 로 잡았더니 템플릿이
 # 너무 작게 줄어 매칭 점수가 0.44 까지 떨어졌다. 1.4 로 맞추면 0.85 가 나온다.
-PLAYER_TARGET_H_RATIO = 1.4
-PLAYER_SCALES = (0.85, 1.0, 1.15)
+# 예전에는 템플릿을 셀 높이의 1.4배로 정규화했다. 그때 디지몬이 셀보다 컸기
+# 때문이다(템플릿 높이/셀 높이 = 1.41~1.55). 그런데 디지몬을 바꾸면 이 비율이
+# 통째로 달라진다(실측: 작은 토끼형은 0.61). 정규화하면 2배 넘게 부풀려져
+# 아예 안 맞는다. 그래서 칩/아이템과 마찬가지로 정규화하지 않고 배율만 넓게 준다.
+PLAYER_SCALES = (0.6, 0.75, 0.9, 1.0, 1.15, 1.35, 1.6)
 PLAYER_TEMPLATE_MIN = 0.62
 # 색 기반 덩어리를 고를 때 '따뜻한 색 비율'에 줄 무게. 크기가 주된 근거다.
 WARM_WEIGHT = 0.3
 PLAYER_BODY_MIN = 0.55
+# 플레이어 스프라이트의 최소 크기(셀 면적 대비). 디지몬은 진화/교체로 크기가
+# 크게 달라진다. 실측: 큰 기계형 1.37, 작은 토끼형 0.13. 작은 쪽도 잡아야 한다.
+PLAYER_BLOB_MIN_AREA = 0.08
 
 
 def _anchor_cell(grid: Grid, bbox: tuple[int, int, int, int],
@@ -405,7 +411,8 @@ def _player_from_highlights(highlights: list[tuple[int, int]]) -> tuple[int, int
     return best
 
 
-def _player_blob(img: np.ndarray, grid: Grid, hsv: np.ndarray | None = None):
+def _player_blob(img: np.ndarray, grid: Grid, hsv: np.ndarray | None = None,
+                 exclude: set | None = None):
     """템플릿 없이 플레이어 스프라이트를 찾는 보조 수단.
 
     게임판 영역 안에서 '게임판 색도 장애물 색도 아닌' 가장 큰 덩어리를 고른다.
@@ -432,10 +439,25 @@ def _player_blob(img: np.ndarray, grid: Grid, hsv: np.ndarray | None = None):
     best = None
     for i in range(1, num):
         x, y, w, h, area = stats[i]
-        if area < cell_area * 0.18:
+        if area < cell_area * PLAYER_BLOB_MIN_AREA:
             continue
         if h < grid.cell_h * 0.45:
             continue
+        # 캐릭터는 납작하지 않다. 게임판 아래쪽 장식 블록이 76x37(가로:세로 2:1)
+        # 로 잡혀서 작은 디지몬(47x47)을 제치고 플레이어로 뽑힌 적이 있다.
+        if h < w * 0.55:
+            continue
+        # 칩/아이템으로 **확실히** 아는 칸은 플레이어 후보에서 뺀다.
+        #
+        # 실측 회귀: 디지몬을 작은 것으로 바꿨더니 스프라이트 면적비가 0.13 이 됐다.
+        # 주황칩은 0.48 이라 크기로 겨루면 칩이 이긴다. 그래서 칩을 플레이어로
+        # 잡고 진짜 플레이어를 놓쳤고, 그 뒤의 모든 이동이 엉뚱한 방향이었다.
+        # 칩/아이템은 템플릿으로 이미 확정한 것이므로 후보에서 빼는 편이 확실하다.
+        if exclude:
+            cx = bx0 + x + w / 2
+            cy = by0 + y + h / 2
+            if grid.clamp_locate(cx, cy) in exclude:
+                continue
         warm = mask_warm(sub[y:y + h, x:x + w],
                          None if sub_hsv is None else sub_hsv[y:y + h, x:x + w]).mean()
         # 크기가 주된 근거이고, 따뜻한 색은 거들 뿐이다.
@@ -486,7 +508,8 @@ def track_player_fast(img: np.ndarray, grid: Grid,
 
 def detect_player(img: np.ndarray, grid: Grid, tpl: dict[str, TemplateSet],
                   highlights: list[tuple[int, int]],
-                  hsv: np.ndarray | None = None) -> Detection | None:
+                  hsv: np.ndarray | None = None,
+                  exclude: set | None = None) -> Detection | None:
     """플레이어를 찾는다.
 
     순서:
@@ -503,7 +526,7 @@ def detect_player(img: np.ndarray, grid: Grid, tpl: dict[str, TemplateSet],
     # 템플릿 매칭은 넓은 영역에서 돌리면 매우 비싸다(실측: 게임판 전체에서
     # 1초). 먼저 색 기반 덩어리로 대략 어디인지 찾아 그 주변만 훑으면
     # 결과는 그대로면서 훨씬 빨라진다.
-    blob = _player_blob(img, grid, hsv)
+    blob = _player_blob(img, grid, hsv, exclude)
     if blob:
         gx0, gy0, gx1, gy1 = blob[0]
         mx, my = int(grid.cell_w * 0.6), int(grid.cell_h * 0.6)
@@ -518,18 +541,14 @@ def detect_player(img: np.ndarray, grid: Grid, tpl: dict[str, TemplateSet],
     conf = 0.0
 
     if tpl["player"]:
-        score, box, label = match_best(sub, tpl["player"],
-                                       target_h=int(grid.cell_h * PLAYER_TARGET_H_RATIO),
-                                       scales=PLAYER_SCALES)
+        score, box, label = match_best(sub, tpl["player"], scales=PLAYER_SCALES)
         if score >= PLAYER_TEMPLATE_MIN and box:
             bbox = (sx0 + box[0], sy0 + box[1], sx0 + box[2], sy0 + box[3])
             conf, note = score, f"전체 템플릿 {label}"
 
     if bbox is None and tpl["player_body"]:
         # 전체 인식이 실패했을 때만 몸통 보조 인식을 쓴다(오탐 감소).
-        score, box, label = match_best(sub, tpl["player_body"],
-                                       target_h=int(grid.cell_h * 0.55),
-                                       scales=PLAYER_SCALES)
+        score, box, label = match_best(sub, tpl["player_body"], scales=PLAYER_SCALES)
         if score >= PLAYER_BODY_MIN and box:
             # 몸통 아래쪽 = 발이 아니므로, 발 위치를 셀 높이만큼 아래로 추정한다.
             y1 = sy0 + box[3] + int(grid.cell_h * 0.30)
@@ -617,6 +636,31 @@ def _overlaps_player(rect, player: Detection | None, ratio: float = 0.25) -> boo
     return (ix * iy) / area >= ratio
 
 
+def _match_cells(img: np.ndarray, grid: Grid, cells, tpl: dict[str, TemplateSet]):
+    """칸마다 칩/아이템 템플릿을 맞춰 본 결과를 한 번에 구한다.
+
+    반환: {"goal": {(r,c): (점수, 라벨)}, "item": {...}}
+
+    플레이어를 찾기 **전에** 불러야 한다. 플레이어 찾기는 '가장 큰 덩어리' 라는
+    헐거운 기준이라, 칩/아이템 칸을 미리 알아야 그걸 플레이어로 오인하지 않는다.
+    """
+    out = {"goal": {}, "item": {}}
+    for key, tset, scales, thr in (
+            ("goal", tpl["goal"], GOAL_SCALES, GOAL_TEMPLATE_MIN),
+            ("item", tpl["item"], ITEM_SCALES, ITEM_TEMPLATE_MIN)):
+        if not tset:
+            continue
+        for r in range(N):
+            for c in range(N):
+                if cells[r][c] == Kind.OBSTACLE:
+                    continue
+                x0, y0, x1, y1 = grid.cell_rect(r, c)
+                score, _, label = match_best(img[y0:y1, x0:x1], tset, scales=scales)
+                if score >= thr:
+                    out[key][(r, c)] = (score, label)
+    return out
+
+
 def analyze(img: np.ndarray, grid: Grid, tpl: dict[str, TemplateSet],
             orange_goal_without_template: bool = False) -> Scene:
     """한 프레임을 통째로 인식해서 Scene 을 만든다.
@@ -647,10 +691,20 @@ def analyze(img: np.ndarray, grid: Grid, tpl: dict[str, TemplateSet],
                 highlights.append((r, c))
             ofrac[r][c] = _frac(m_obst, rect)
 
-    # --- 1) 플레이어 먼저 ------------------------------------------------
-    # 플레이어를 먼저 확정해야 그 스프라이트가 걸친 이웃 칸을 아이템/목적지로
-    # 잘못 세는 일을 막을 수 있다.
-    player = detect_player(img, grid, tpl, highlights, hsv)
+    # --- 1) 칩/아이템을 템플릿으로 먼저 확정한다 --------------------------
+    # 순서가 중요하다. 예전에는 플레이어를 먼저 찾았는데, 플레이어 찾기는
+    # '게임판 색이 아닌 가장 큰 덩어리' 라는 헐거운 기준이라 **칩이나 아이템을
+    # 플레이어로 잘못 잡을 수 있다.**
+    #
+    # 실측 회귀: 디지몬을 작은 것으로 바꿨더니 스프라이트 면적비가 0.13 이 됐다.
+    # 주황칩은 0.48 이라 크기로 겨루면 칩이 이긴다. 그래서 칩을 플레이어로 잡고
+    # 진짜 플레이어를 놓쳤고, 그 뒤의 모든 이동이 엉뚱한 방향이었다.
+    #
+    # 칩/아이템은 템플릿으로 확실히 아는 것이므로 먼저 확정하고, 그 칸은
+    # 플레이어 후보에서 뺀다.
+    strong = _match_cells(img, grid, cells, tpl)
+    player = detect_player(img, grid, tpl, highlights, hsv,
+                           exclude=set(strong["goal"]) | set(strong["item"]))
     if player is None:
         notes.append("플레이어를 찾지 못했습니다.")
 
@@ -707,47 +761,46 @@ def analyze(img: np.ndarray, grid: Grid, tpl: dict[str, TemplateSet],
     # 0.067 -> 칩 판정). 그러면 매크로가 그걸 1순위 목표로 쫓아간다. 노란색과
     # 주황색은 색만으로 가르기 어렵다. 템플릿으로 '이건 아이템이다'가 확인되면
     # 그 칸은 칩 색 판정에서 빼야 한다. 템플릿이 색보다 강한 증거다.
+    # 위에서 이미 맞춰 둔 결과를 쓴다(같은 매칭을 두 번 하지 않는다).
     item_by_template: dict[tuple[int, int], Detection] = {}
-    if tpl["item"]:
-        for r in range(N):
-            for c in range(N):
-                if cells[r][c] == Kind.OBSTACLE:
-                    continue
-                if player and (r, c) == (player.row, player.col):
-                    continue
-                x0, y0, x1, y1 = grid.cell_rect(r, c)
-                score, _, label = match_best(img[y0:y1, x0:x1], tpl["item"],
-                                             scales=ITEM_SCALES)
-                if score >= ITEM_TEMPLATE_MIN:
-                    item_by_template[(r, c)] = Detection(
-                        Kind.ITEM, r, c, score, grid.cell_rect(r, c),
-                        f"템플릿 {label} {score:.2f}",
-                        item_kind=item_kind_of(label))
+    for (r, c), (score, label) in strong["item"].items():
+        if cells[r][c] == Kind.OBSTACLE:
+            continue
+        if player and (r, c) == (player.row, player.col):
+            continue
+        item_by_template[(r, c)] = Detection(
+            Kind.ITEM, r, c, score, grid.cell_rect(r, c),
+            f"템플릿 {label} {score:.2f}", item_kind=item_kind_of(label))
 
     goals: list[Detection] = []
-    if tpl["goal"]:
-        for r in range(N):
-            for c in range(N):
-                if cells[r][c] == Kind.OBSTACLE:
-                    continue
-                if player and (r, c) == (player.row, player.col):
-                    continue
-                x0, y0, x1, y1 = grid.cell_rect(r, c)
-                score, _, label = match_best(img[y0:y1, x0:x1], tpl["goal"],
-                                             scales=GOAL_SCALES)
-                if score >= GOAL_TEMPLATE_MIN:
-                    # 아이템 템플릿이 더 잘 맞으면 그건 칩이 아니다.
-                    other = item_by_template.get((r, c))
-                    if other is not None and other.confidence > score:
-                        continue
-                    goals.append(Detection(Kind.GOAL, r, c, score,
-                                           grid.cell_rect(r, c),
-                                           f"템플릿 {label} {score:.2f}"))
-        if goals:
-            notes.append(f"주황칩 {len(goals)}개를 템플릿으로 찾았습니다.")
+    for (r, c), (score, label) in strong["goal"].items():
+        if cells[r][c] == Kind.OBSTACLE:
+            continue
+        if player and (r, c) == (player.row, player.col):
+            continue
+        # 아이템 템플릿이 더 잘 맞으면 그건 칩이 아니다.
+        other = item_by_template.get((r, c))
+        if other is not None and other.confidence > score:
+            continue
+        goals.append(Detection(Kind.GOAL, r, c, score, grid.cell_rect(r, c),
+                               f"템플릿 {label} {score:.2f}"))
+    if goals:
+        notes.append(f"주황칩 {len(goals)}개를 템플릿으로 찾았습니다.")
 
-    if not goals and (tpl["goal"] or orange_goal_without_template):
-        # 템플릿이 없거나 가려진 경우: 주황 카드 색으로 찾는다.
+    # **칩 템플릿이 있으면 색 추측은 쓰지 않는다.**
+    #
+    # 실측 회귀: 색 대체 경로가 한 프레임에 유령 칩을 7개나 만들었다.
+    # 게임판 위아래의 장식 띠와 하단 테두리가 주황색이라 그렇다.
+    #     맨 아래 행 주황 비율 0.601 / 0.543 / 0.333   (칩 기준은 0.035)
+    #     위쪽 장식 띠        0.104 / 0.099
+    # 그 바람에 (1) 맨 아래 진짜 칩이 유령들에 묻히고, (2) 가장 왼쪽 유령을
+    # 목표로 삼아 왼쪽으로 잘못 이동하고, (3) 엉뚱한 방향으로 움직였다.
+    # 사용자가 보고한 세 증상이 전부 이것 하나에서 나왔다.
+    #
+    # 칩 템플릿은 실제 칩을 0.95(기준 0.62)로 잡는다. 색보다 훨씬 확실하므로,
+    # 템플릿이 있으면 색은 보지 않는다. 템플릿이 아예 없는 사람만 색으로 찾는다.
+    if not goals and orange_goal_without_template and not tpl["goal"]:
+        # 템플릿이 없는 경우의 최후 수단: 주황 카드 색으로 찾는다.
         # **한 판에 주황칩이 여러 개 놓일 수 있다**(실측: 2개). 가장 진한 하나만
         # 고르면 프레임마다 다른 칩이 뽑혀 목표가 왔다 갔다 한다. 전부 모아 두고
         # 어느 칩부터 먹을지는 경로 계산에서 정한다.
