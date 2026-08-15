@@ -77,24 +77,49 @@ def passable(kind: Kind) -> bool:
     return kind != Kind.OBSTACLE
 
 
+# 지나가면서 주우면 좋은 것의 값어치. 길이가 같은 경로가 여럿일 때만 쓴다.
+# 칩을 크게 잡은 이유는 칩이 걸음수보다 중요하기 때문이다. 목표로 가는 길에
+# 다른 칩이 놓여 있으면 그 길로 간다.
+PICKUP_VALUE = {Kind.GOAL: 4, Kind.ITEM: 1}
+
+
 def _bfs(cells: list[list[Kind]], start: Cell) -> tuple[dict[Cell, int], dict[Cell, Cell]]:
-    """장애물을 피해 상하좌우로만 이동하는 BFS. (거리, 이전칸) 을 돌려준다."""
+    """장애물을 피해 상하좌우로만 이동하는 BFS. (거리, 이전칸) 을 돌려준다.
+
+    같은 거리의 경로가 여러 개일 때는 **지나가며 주울 게 많은 쪽**을 고른다.
+    걸음수/부수기/돌진 아이템은 판 위에 놓여 있고, 밟으면 그냥 얻어진다.
+
+    **거리는 절대 늘리지 않는다.** 아이템을 먹으려고 돌아가거나 장애물을 부수는
+    일은 없다. 어디까지나 '가는 길에 공짜로 얻어지는 것'만 챙긴다.
+
+    구현: BFS 는 거리가 커지는 순서로 꺼내므로, 어떤 칸 v 를 꺼낼 때쯤이면
+    v 로 올 수 있는 같은 거리의 이전 칸들이 모두 처리돼 있다. 그래서 v 를
+    처음 발견할 때뿐 아니라 '같은 거리로 또 닿았을 때'도 비교해서, 주운 게
+    더 많은 쪽으로 이전 칸을 갈아끼우면 된다.
+    """
     dist: dict[Cell, int] = {start: 0}
     prev: dict[Cell, Cell] = {}
+    picked: dict[Cell, int] = {start: 0}       # 여기까지 오면서 주운 것의 합
     q = deque([start])
     while q:
         r, c = q.popleft()
         for _, dr, dc in DIRS:
-            nr, nc = r + dr, c + dc
+            nxt = (r + dr, c + dc)
+            nr, nc = nxt
             if not (0 <= nr < N and 0 <= nc < N):
-                continue
-            if (nr, nc) in dist:
                 continue
             if not passable(cells[nr][nc]):
                 continue
-            dist[(nr, nc)] = dist[(r, c)] + 1
-            prev[(nr, nc)] = (r, c)
-            q.append((nr, nc))
+            gain = picked[(r, c)] + PICKUP_VALUE.get(cells[nr][nc], 0)
+            if nxt not in dist:
+                dist[nxt] = dist[(r, c)] + 1
+                prev[nxt] = (r, c)
+                picked[nxt] = gain
+                q.append(nxt)
+            elif dist[nxt] == dist[(r, c)] + 1 and gain > picked[nxt]:
+                # 같은 거리인데 주운 게 더 많은 길을 찾았다. 그쪽으로 갈아탄다.
+                prev[nxt] = (r, c)
+                picked[nxt] = gain
     return dist, prev
 
 

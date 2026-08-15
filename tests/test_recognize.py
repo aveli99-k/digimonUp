@@ -432,3 +432,41 @@ def test_스프라이트_마스크를_못_만들면_예전_방식으로_돌아�
     det.sprite = None
     # numpy 불리언이 돌아오므로 `is True` 로 비교하면 안 된다.
     assert bool(recognize._overlaps_player(g.cell_rect(1, 1), det))
+
+
+# ------------------------- 칩과 아이템은 다른 것이다 (실측 회귀)
+def test_진짜_템플릿이면_주황_카드를_칩으로_읽는다():
+    """실측 회귀: templates/explore/item/item_01.png 는 사실 **칩**이었다.
+
+    아이템 폴더에 들어 있어서, 칩이 '1순위 목표'가 아니라 '지나가다 줍는 것'으로
+    격하될 수 있었다. 칩이 걸음수보다 중요하므로 이건 손해다.
+    지금은 goal/ 로 옮겼고, 세 캡처 모두에서 칩으로 읽힌다.
+    """
+    tpl = _real_templates()
+    if not tpl["goal"]:
+        pytest.skip("templates/explore/goal 이 비어 있습니다")
+    for fixture in ("explore_sample1.png", "explore_sample2.png",
+                    "explore_sample3.png"):
+        img = cv2.imread(f"tests/fixtures/{fixture}")
+        g = board.detect_board(img)
+        sc = recognize.analyze(img, g, tpl, orange_goal_without_template=True)
+        assert (4, 3) in {(d.row, d.col) for d in sc.goals}, \
+            f"{fixture}: 주황 카드를 칩으로 읽지 못했습니다"
+        assert not [d for d in sc.detections
+                    if d.kind is Kind.ITEM and (d.row, d.col) == (4, 3)], \
+            f"{fixture}: 칩을 아이템으로도 셌습니다"
+
+
+def test_아이템_폴더에는_칩이_없어야_한다():
+    """칩 템플릿이 item/ 에 섞이면 칩이 아이템으로 격하된다."""
+    tpl = _real_templates()
+    if not (tpl["item"] and tpl["goal"]):
+        pytest.skip("템플릿이 비어 있습니다")
+    img = cv2.imread("tests/fixtures/explore_sample1.png")
+    g = board.detect_board(img)
+    x0, y0, x1, y1 = g.cell_rect(4, 3)          # 여기 있는 것은 칩이다
+    chip = img[y0:y1, x0:x1]
+    as_item = recognize.match_best(chip, tpl["item"],
+                                   scales=recognize.ITEM_SCALES)[0]
+    assert as_item < recognize.ITEM_TEMPLATE_MIN, \
+        f"칩이 아이템 템플릿에 {as_item:.2f} 로 맞습니다. item/ 에 칩이 섞여 있습니다"

@@ -573,6 +573,9 @@ def detect_player(img: np.ndarray, grid: Grid, tpl: dict[str, TemplateSet],
 OBSTACLE_FRAC = 0.32
 OBSTACLE_FRAC_WEAK = 0.18     # 가려졌을 때를 위한 완화 기준
 ITEM_WARM_FRAC = 0.10
+ITEM_TEMPLATE_MIN = 0.60
+# 아이템 아이콘도 셀 높이에 맞춰 정규화하지 않는다(위 GOAL_SCALES 와 같은 이유).
+ITEM_SCALES = (0.6, 0.75, 0.9, 1.0, 1.15, 1.35)
 GOAL_TEMPLATE_MIN = 0.62
 # 칩 템플릿은 카드 전체가 아니라 **중심(번개 무늬)** 이다. 셀 높이에 맞춰
 # 정규화하지 않고 배율만 넓게 준다. 템플릿을 찍은 창과 실행 창의 크기가
@@ -740,13 +743,16 @@ def analyze(img: np.ndarray, grid: Grid, tpl: dict[str, TemplateSet],
             if player is not None and player.sprite is None                     and _overlaps_player(rect, player):
                 continue
             if tpl["item"]:
+                # 칩과 같은 이유로 셀 높이에 맞춰 정규화하지 않는다. 판 위의 아이템
+                # 아이콘은 셀 높이의 0.73 쯤인데(실측: 64px / 88px), 0.5 로 줄이면
+                # 너무 작아져서 맞을 수가 없었다. 배율만 넓게 준다.
                 x0, y0, x1, y1 = rect
-                score, _, _ = match_best(img[y0:y1, x0:x1], tpl["item"],
-                                         target_h=int(grid.cell_h * 0.5),
-                                         scales=(0.85, 1.0, 1.15))
-                if score >= 0.60:
+                score, _, label = match_best(img[y0:y1, x0:x1], tpl["item"],
+                                             scales=ITEM_SCALES)
+                if score >= ITEM_TEMPLATE_MIN:
                     cells[r][c] = Kind.ITEM
-                    detections.append(Detection(Kind.ITEM, r, c, score, rect, "템플릿"))
+                    detections.append(Detection(Kind.ITEM, r, c, score, rect,
+                                                f"템플릿 {label} {score:.2f}"))
                     continue
             if _frac(m_warm, rect) >= ITEM_WARM_FRAC:
                 cells[r][c] = Kind.ITEM

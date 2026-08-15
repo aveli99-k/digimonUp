@@ -362,3 +362,87 @@ def test_칩이_없으면_오른쪽_전진():
     ])
     assert scene.goals == []
     assert plan_route(scene).kind == PlanKind.RIGHT_EDGE
+
+
+# ------------------------- 가는 길에 아이템 줍기 (돌아가지는 않는다)
+def _plan_for(rows):
+    """글자판으로 Scene 을 만들어 경로를 계산한다.  P 플레이어 / G 칩 / i 아이템 / X 장애물"""
+    sym = {".": Kind.EMPTY, "P": Kind.PLAYER, "G": Kind.GOAL,
+           "X": Kind.OBSTACLE, "i": Kind.ITEM}
+    cells = [[sym[ch] for ch in row] for row in rows]
+    player = goals = None
+    goals = []
+    for r in range(5):
+        for c in range(5):
+            if rows[r][c] == "P":
+                player = Detection(Kind.PLAYER, r, c, 1.0)
+            elif rows[r][c] == "G":
+                goals.append(Detection(Kind.GOAL, r, c, 1.0))
+    scene = Scene(grid=None, cells=cells, player=player,
+                            goal=goals[0] if goals else None, goals=goals)
+    return plan_route(scene)
+
+
+def test_같은_거리면_아이템을_밟는_길로_간다():
+    """칩까지 두 갈래 길이 똑같이 3칸이면, 아이템이 놓인 쪽으로 간다."""
+    plan = _plan_for([
+        ".i..G",      # 위로 돌면 아이템을 밟는다
+        "P....",
+        ".....",
+        ".....",
+        ".....",
+    ])
+    # (0,4) 칩까지 최단 5칸. 위 경로는 (0,1) 아이템을 지난다.
+    assert (0, 1) in plan.path, f"아이템을 지나는 길을 고르지 않았습니다: {plan.path}"
+    assert len(plan.path) - 1 == 5, "최단 거리가 아닙니다"
+
+
+def test_아이템을_먹으려고_돌아가지_않는다():
+    """아이템이 경로 밖에 있으면 무시한다. 걸음수가 늘어나면 안 된다."""
+    plan = _plan_for([
+        ".....",
+        "P...G",      # 칩까지 4칸 직진
+        ".....",
+        "..i..",      # 아이템은 두 칸 아래. 먹으러 가면 4칸이 더 든다
+        ".....",
+    ])
+    assert len(plan.path) - 1 == 4, f"돌아갔습니다: {plan.path}"
+    assert (3, 2) not in plan.path
+
+
+def test_아이템_때문에_장애물을_부수지_않는다():
+    """아이템이 장애물 뒤에 있어도 부수지 않는다."""
+    plan = _plan_for([
+        ".....",
+        "P.X.G",      # 아이템은 장애물 뒤
+        ".....",
+        ".....",
+        ".....",
+    ])
+    assert plan.kind != PlanKind.BREAK_OBSTACLE
+    for cell in plan.path:
+        assert cell != (1, 2), "장애물 칸을 지나려 했습니다"
+
+
+def test_가는_길의_다른_칩도_주워간다():
+    """목표 칩으로 가는 길에 다른 칩이 있으면 그 길로 간다."""
+    plan = _plan_for([
+        ".G..G",
+        "P....",
+        ".....",
+        ".....",
+        ".....",
+    ])
+    assert (0, 1) in plan.path, f"길에 있는 칩을 지나치지 않아야 합니다: {plan.path}"
+
+
+def test_아이템이_없으면_예전과_같다():
+    plan = _plan_for([
+        ".....",
+        "P...G",
+        ".....",
+        ".....",
+        ".....",
+    ])
+    assert plan.kind == PlanKind.GOAL
+    assert len(plan.path) - 1 == 4
