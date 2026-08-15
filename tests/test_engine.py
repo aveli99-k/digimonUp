@@ -644,3 +644,56 @@ def test_중지키는_config_최상위_stop_key_를_따른다():
     import settings
     cfg = settings.load_explore_config()
     assert cfg.stop_key, "config.json 의 stop_key 를 못 읽었습니다"
+
+
+# ------------------- 칩 획득 이펙트 걸러내기 — 실측 회귀
+def _scene_with_goals(goals):
+    from recognize import Detection, Scene
+    from recognize import Kind
+    cells = [[Kind.EMPTY] * 5 for _ in range(5)]
+    dets = []
+    for r, c in goals:
+        cells[r][c] = Kind.GOAL
+        dets.append(Detection(Kind.GOAL, r, c, 0.95))
+    return Scene(grid=None, cells=cells, goals=dets)
+
+
+def test_한_번만_보인_칩은_이펙트로_보고_거른다():
+    """실측: 칩을 먹으면 디지몬 주변으로 칩이 흩어지는 이펙트가 뜬다.
+
+    그 칩들은 템플릿 0.94~0.98, 주황 0.096~0.202 로 진짜와 구별되지 않아
+    한 프레임에 칩이 5~7개로 잡혔고, 매크로가 쫓아가 왼쪽으로 헛걸음했다.
+    """
+    eng = _engine([])
+
+    first = _scene_with_goals([(1, 3), (4, 0), (4, 1)])
+    eng._confirm_goals(first)
+    assert [(d.row, d.col) for d in first.goals] == [], \
+        "처음 보인 칩은 아직 인정하지 않는다"
+
+    # 다음 사이클: 진짜 칩 (1,3) 만 그대로 남고 이펙트 둘은 사라졌다
+    second = _scene_with_goals([(1, 3)])
+    eng._confirm_goals(second)
+    assert [(d.row, d.col) for d in second.goals] == [(1, 3)]
+    from recognize import Kind
+    assert second.cells[1][3] is Kind.GOAL
+
+
+def test_전진해서_열이_밀려도_같은_칩으로_알아본다():
+    """오른쪽으로 전진하면 판이 밀려 칩의 열 번호가 하나 줄어든다."""
+    eng = _engine([])
+    eng._confirm_goals(_scene_with_goals([(2, 4)]))
+
+    eng._scrolls_since = 1                      # 한 칸 전진했다
+    after = _scene_with_goals([(2, 3)])
+    eng._confirm_goals(after)
+    assert [(d.row, d.col) for d in after.goals] == [(2, 3)], \
+        "밀린 자리의 같은 칩을 새 칩으로 보면 안 됩니다"
+
+
+def test_거른_칩은_판에서도_빈칸이_된다():
+    eng = _engine([])
+    sc = _scene_with_goals([(0, 0)])
+    eng._confirm_goals(sc)
+    from recognize import Kind
+    assert sc.cells[0][0] is Kind.EMPTY, "경로 계산이 보는 판에서도 빠져야 합니다"

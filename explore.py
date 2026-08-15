@@ -177,6 +177,10 @@ class ExploreEngine:
         # 마지막 움직임 검사에서 '판이 아직 스크롤 중'이었는지.
         # 그런 프레임은 칩/장애물 인식도 믿을 수 없어 그 사이클을 통째로 건너뛴다.
         self._board_animating = False
+        # 직전 사이클에서 **검출된 그대로의** 칩 자리와, 그 뒤로 몇 번
+        # 스크롤했는지. 칩 획득 이펙트를 걸러내는 데 쓴다(_confirm_goals).
+        self._prev_goals: set = set()
+        self._scrolls_since = 0
 
     # ---------------------------------------------------------------- 정지
     def stop(self) -> None:
@@ -436,6 +440,44 @@ class ExploreEngine:
                 return cell
             return None
         return None
+
+    # ------------------------------------------- 칩 획득 이펙트 걸러내기
+    def _confirm_goals(self, scene: Scene) -> None:
+        """**두 사이클 연속으로 같은 자리에 보인 칩만** 진짜로 인정한다.
+
+        칩을 먹으면 디지몬 주변으로 칩이 흩어지는 이펙트가 뜬다. 그 칩들은
+        템플릿 점수 0.94~0.98, 주황 비율 0.096~0.202 로 진짜와 전혀 구별되지
+        않는다. 셀 한가운데 정렬 검사로 상당수는 걸러지지만, 우연히 가운데
+        근처에 떨어진 것은 그대로 통과한다. 모양과 색으로는 더 가를 수 없다.
+
+        가르는 것은 **시간**이다. 이펙트 칩은 잠깐 떴다 사라지고, 진짜 칩은
+        다음 사이클에도 그 자리에 있다. 그사이 오른쪽으로 전진했다면 판이
+        밀렸으므로 열 번호가 그만큼 줄어든 자리에 있다.
+
+        새로 들어온 칩은 한 사이클 늦게 인정된다. 2열 이상의 칩은 어차피 그
+        행에 서서 전진해야 들어오는 것이라(pathfind 참고) 한 사이클 늦어도
+        손해가 없다.
+        """
+        now = {(d.row, d.col) for d in scene.goals}
+        shift = self._scrolls_since
+        expected = {(r, c - shift) for r, c in self._prev_goals}
+        confirmed = now & expected
+
+        # 다음 사이클을 위해 **거른 뒤가 아니라 검출된 그대로**를 기억한다.
+        # 그래야 이번에 처음 보인 진짜 칩이 다음 사이클에 인정받는다.
+        self._prev_goals = now
+        self._scrolls_since = 0
+
+        dropped = now - confirmed
+        if not dropped:
+            return
+        scene.goals = [d for d in scene.goals if (d.row, d.col) in confirmed]
+        for r, c in dropped:
+            if scene.cells[r][c] == Kind.GOAL:
+                scene.cells[r][c] = Kind.EMPTY
+        scene.notes.append(
+            f"한 번만 보인 칩 {sorted(dropped)} 은(는) 획득 이펙트일 수 있어 "
+            f"이번에는 목표로 삼지 않습니다.")
 
     # ------------------------------------------------- 아이템 개수 모니터링
     def _update_counts(self, img: np.ndarray) -> None:
@@ -773,6 +815,8 @@ class ExploreEngine:
                 scene = analyze(img, grid, self.templates,
                                 self.cfg.orange_goal_without_template,
                                 motion_cell=motion)
+                # 칩 획득 이펙트로 흩어진 칩을 목표로 삼지 않는다.
+                self._confirm_goals(scene)
                 # 빠른 추적이 장애물/칩/아이템을 플레이어로 잡지 않게 넘겨준다.
                 self._not_player = (
                     {(r, c) for r in range(N) for c in range(N)
@@ -907,6 +951,7 @@ class ExploreEngine:
                     current = nxt
                     self.break_fail_streak = 0   # 길이 열렸다면 다시 시도해 볼 만하다
                     if scrolled:
+                        self._scrolls_since += 1
                         # 판이 통째로 밀렸다. 남은 경로의 칸 번호는 이제 딴 곳을
                         # 가리키므로 그대로 클릭하면 '이동할 수 없습니다'가 뜬다.
                         self.log("[경로] 게임판이 스크롤해서 남은 경로를 버리고 "
