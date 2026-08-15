@@ -25,7 +25,7 @@ a = Analysis(
         "tkinter", "tkinter.ttk",
         "gui", "explore", "network_macro", "board", "recognize",
         "pathfind", "overlay", "emulator_window", "settings", "common",
-        "single_instance", "paths", "counters", "imgio",
+        "single_instance", "paths", "counters", "imgio", "version",
     ],
     hookspath=[],
     runtime_hooks=[],

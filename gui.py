@@ -27,6 +27,8 @@ from datetime import datetime
 import tkinter as tk
 from tkinter import ttk
 
+from version import __version__, version_line
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 MODES = [
@@ -38,7 +40,7 @@ MODES = [
 class App:
     def __init__(self, root: tk.Tk):
         self.root = root
-        root.title("digimonUp 매크로")
+        root.title(f"digimonUp 매크로  v{__version__}")
         root.geometry("1020x720")
         root.minsize(860, 600)
         self._set_icon(root)
@@ -99,6 +101,11 @@ class App:
         ttk.Label(info, text="고정된 HWND:").grid(row=0, column=2, sticky="w")
         ttk.Label(info, textvariable=self.hwnd_var,
                   font=("Consolas", 10)).grid(row=0, column=3, sticky="w", padx=4)
+        # 버전은 오른쪽 끝에 붙여 둔다. 문제를 알려 줄 때 어느 판인지 바로
+        # 확인할 수 있어야 하고, 제목 표시줄은 창을 최대화하면 잘 안 보인다.
+        info.columnconfigure(4, weight=1)
+        ttk.Label(info, text=f"v{__version__}", foreground="#888").grid(
+            row=0, column=4, sticky="e")
 
         pane = ttk.Panedwindow(self.root, orient="horizontal")
         pane.pack(fill="both", expand=True, padx=10, pady=10)
@@ -176,6 +183,9 @@ class App:
         if self.worker and self.worker.is_alive():
             return
         self.text.delete("1.0", "end")
+        # 로그 첫 줄에 버전을 남긴다. 사용자가 로그를 그대로 보내 줄 때
+        # 어느 판에서 난 일인지 바로 알 수 있어야 한다.
+        self.log(version_line())
         self.start_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
         self.status("시작 중...")

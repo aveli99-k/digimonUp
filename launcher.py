@@ -6,6 +6,7 @@
     python launcher.py 1         -> 콘솔에서 바로 네트워크
     python launcher.py 2         -> 콘솔에서 바로 탐사
     python launcher.py --console -> 콘솔에서 번호를 물어본 뒤 실행
+    python launcher.py --version -> 버전만 찍고 종료
 """
 
 from __future__ import annotations
@@ -30,10 +31,11 @@ _silence_missing_console()
 
 import single_instance  # noqa: E402
 from emulator_window import enable_dpi_awareness  # noqa: E402
+from version import __version__, version_line  # noqa: E402
 
-MENU = """
+MENU = f"""
 ============================================
- digimonUp 매크로
+ digimonUp 매크로  v{__version__}
 ============================================
   1) 네트워크  - 매칭/포기 자동 클릭
   2) 탐사      - 5x5 게임판 자동 이동
@@ -62,6 +64,12 @@ def run_console(mode: str) -> int:
 def main(argv: list[str]) -> int:
     enable_dpi_awareness()
     args = [a for a in argv[1:] if a]
+
+    # 버전 확인은 중복 실행 검사보다 먼저 한다. 매크로가 이미 돌고 있어도
+    # 버전은 물어볼 수 있어야 한다.
+    if args and args[0] in ("--version", "-V"):
+        print(version_line())
+        return 0
 
     # 두 개가 동시에 돌면 같은 게임 창에 서로 클릭을 날려 둘 다 망가진다.
     if not single_instance.acquire():
