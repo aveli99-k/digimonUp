@@ -3,11 +3,13 @@ chcp 65001 > nul
 title digimonUp - EXE build
 cd /d "%~dp0.."
 
-echo [1/3] 필요한 패키지 확인...
-python -m pip install --quiet --upgrade pyinstaller opencv-python numpy pillow pyautogui pywin32
+echo [1/4] 필요한 패키지 확인...
+REM 패키지 목록은 requirements 파일 한 곳에만 둔다. 예전에는 이 줄에 직접
+REM 적어 두어서, 저장소를 받은 사람이 무엇을 설치해야 하는지 알 수 없었다.
+python -m pip install --quiet -r requirements.txt -r requirements-dev.txt
 if errorlevel 1 goto :fail
 
-echo [2/3] 테스트 실행...
+echo [2/4] 테스트 실행...
 python -m pytest tests -q
 if errorlevel 1 (
   echo.

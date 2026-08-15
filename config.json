@@ -26,6 +26,8 @@
   "stop_key": "F12",
   "log_file": "macro.log",
   "explore": {
+    "window_title_hint": "",
+    "window_min_size": 200,
     "top_tab_min": 0.6,
     "board_min": 0.45,
     "require_top_tab": true,

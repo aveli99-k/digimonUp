@@ -29,7 +29,7 @@ def _silence_missing_console() -> None:
 _silence_missing_console()
 
 import single_instance  # noqa: E402
-from mumu_window import enable_dpi_awareness  # noqa: E402
+from emulator_window import enable_dpi_awareness  # noqa: E402
 
 MENU = """
 ============================================

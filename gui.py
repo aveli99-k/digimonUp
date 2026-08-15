@@ -41,6 +41,7 @@ class App:
         root.title("digimonUp 매크로")
         root.geometry("1020x720")
         root.minsize(860, 600)
+        self._set_icon(root)
 
         self.mode = tk.StringVar(value="2")
         self.status_var = tk.StringVar(value="대기 중")
@@ -53,6 +54,17 @@ class App:
         self._build()
         self.root.after(60, self._drain)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    @staticmethod
+    def _set_icon(root: tk.Tk) -> None:
+        """제목 표시줄과 작업 표시줄 아이콘. 없거나 실패해도 그냥 넘어간다."""
+        try:
+            from paths import resource
+            path = resource("assets", "icon.ico")
+            if os.path.exists(path):
+                root.iconbitmap(path)
+        except Exception:
+            pass      # 아이콘은 없어도 동작에는 아무 지장이 없다
 
     # ------------------------------------------------------------- 화면 구성
     def _build(self) -> None:
@@ -228,7 +240,7 @@ class App:
 
 
 def main() -> int:
-    from mumu_window import enable_dpi_awareness
+    from emulator_window import enable_dpi_awareness
     enable_dpi_awareness()
 
     root = tk.Tk()

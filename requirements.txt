@@ -1,0 +1,14 @@
+# digimonUp 매크로 실행에 필요한 패키지
+#   설치:  pip install -r requirements.txt
+#
+# Python 3.10 이상이 필요합니다 (코드에서 `int | None` 형태의 타입 표기를 씁니다).
+# Windows 전용입니다. 창 캡처와 클릭에 Windows API 를 직접 씁니다.
+
+opencv-python>=4.8      # 템플릿 매칭, 격자/색 인식
+numpy>=1.24             # 이미지 배열 연산
+pillow>=10.0            # 전체 화면 캡처 (1번 기능)
+pyautogui>=0.9.54       # 1번 기능의 마우스 클릭
+pywin32>=306            # 창 찾기 / 클라이언트 캡처 / 좌표 변환
+
+# GUI(tkinter)는 파이썬에 기본 포함입니다.
+# 윈도우용 공식 설치 프로그램을 쓰면 따로 설치할 것이 없습니다.

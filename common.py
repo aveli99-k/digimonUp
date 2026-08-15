@@ -12,17 +12,20 @@ import numpy as np
 from PIL import ImageGrab
 
 from imgio import imread_bgr, imwrite
-from paths import BASE_DIR, CONFIG_PATH
-# DPI 처리는 mumu_window 에 정본이 있다. 예전에는 여기에도 같은 함수가 한 벌 더
+from paths import BASE_DIR, CONFIG_PATH, resource
+# DPI 처리는 emulator_window 에 정본이 있다. 예전에는 여기에도 같은 함수가 한 벌 더
 # 있었는데, 한쪽만 고치면 다른 쪽이 조용히 어긋나므로 하나로 합쳤다.
-from mumu_window import enable_dpi_awareness  # noqa: F401  (여기서 계속 가져다 쓴다)
+from emulator_window import enable_dpi_awareness  # noqa: F401  (여기서 계속 가져다 쓴다)
 
 
 def load_config() -> dict:
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         cfg = json.load(f)
+    # 템플릿은 읽기만 하므로 resource() 로 찾는다. EXE 옆에 있으면 그것을,
+    # 없으면 EXE 안에 넣어 둔 기본값을 쓴다(파일 하나로도 돌아가게).
     for key in ("match_template", "giveup_template"):
-        cfg[key] = os.path.join(BASE_DIR, cfg[key].replace("/", os.sep))
+        cfg[key] = resource(*cfg[key].replace("\\", "/").split("/"))
+    # 로그는 쓰는 파일이라 항상 EXE 옆이다.
     if cfg.get("log_file"):
         cfg["log_file"] = os.path.join(BASE_DIR, cfg["log_file"])
     return cfg

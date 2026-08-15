@@ -1,26 +1,42 @@
-"""MuMuPlayer 창을 찾아 '고정'하고, 그 창만 캡처/클릭하는 모듈.
+"""앱플레이어(안드로이드 에뮬레이터) 창을 찾아 '고정'하고, 그 창만 캡처/클릭한다.
 
 핵심 원칙
   - 고정 화면 좌표를 쓰지 않는다. 모든 좌표는 **고정된 HWND 의 클라이언트 좌표**다.
-  - 창 제목만 믿지 않는다. 게임 화면은 계속 바뀌므로 두 가지를 함께 확인한다.
-        1) 상단에 고정된 게임 탭 이미지가 보이는가
+  - 창 제목이나 클래스 이름만 믿지 않는다. 최종 판정은 **화면 내용**으로 한다.
+        1) 상단에 고정된 게임 탭 이미지가 보이는가 (템플릿을 넣은 경우)
         2) 화면 안에 5x5 게임판 격자 테두리가 있는가
   - 한 번 고정한 HWND 는 실행 중에 바꾸지 않는다.
 
-MuMuPlayer 12 의 창 구조 (실측)
+왜 클래스 이름에 의존하지 않는가
+    처음에는 MuMuPlayer 의 창 클래스(nemuwin / Qt5...QWindowIcon)를 코드에 박아 두고
+    그 창만 찾았다. 그러면 LDPlayer, NoxPlayer, BlueStacks 처럼 클래스 이름이 다른
+    앱플레이어에서는 후보가 아예 0개가 되어 "창을 찾지 못했습니다"만 뜬다.
+
+    하지만 이 매크로는 어차피 **화면에 5x5 게임판이 있는지**를 보고 창을 확정한다
+    (explore.pick_window). 그 검사가 진짜 판정이고 클래스 이름은 후보를 좁히는
+    힌트일 뿐이다. 그래서 아래처럼 바꿨다.
+
+      - 아는 앱플레이어는 EMULATOR_PROFILES 로 정확히 집어내고(빠르고 확실하다)
+      - 모르는 앱플레이어는 '적당한 크기의 보이는 창'을 전부 후보로 올린 뒤
+        게임판 검사로 거른다
+
+    덕분에 새 앱플레이어가 나와도 코드를 고치지 않고 동작한다.
+
+앱플레이어 창 구조 (MuMuPlayer 12 실측)
     Qt5156QWindowIcon  "Android Device"      <- 최상위 창
       +- Qt5156QWindowIcon  "MuMuNxDevice"
       +- nemuwin           "nemudisplay"     <- 실제 안드로이드 화면이 그려지는 자식 창
     Qt5156QWindowIcon  "MuMuPlayer"          <- 멀티 인스턴스 관리창(게임 아님)
       +- MuMuNativeWindow "MuMuThumbnailWindow"
 
-게임 화면은 nemudisplay 자식 창에만 그려지므로, 캡처/클릭 대상은 이 자식 창이다.
-상단 툴바(키보드/음량/뒤로가기 아이콘)가 포함되지 않아 좌표 계산이 깔끔해진다.
+안드로이드 화면은 자식 창에만 그려지는 경우가 많다. 그 자식 창을 잡으면 상단
+툴바(키보드/음량/뒤로가기)가 캡처에 안 들어와 좌표 계산이 깔끔해진다.
 """
 
 from __future__ import annotations
 
 import ctypes
+import os
 import time
 from ctypes import wintypes
 from dataclasses import dataclass, field
@@ -32,14 +48,62 @@ import win32con
 import win32gui
 import win32ui
 
-# 안드로이드 화면이 그려지는 자식 창의 클래스/제목
-RENDER_CLASSES = ("nemuwin",)
-RENDER_TITLES = ("nemudisplay",)
-# 최상위 후보 창의 클래스 접두어 (Qt 버전에 따라 숫자가 달라진다: Qt5156QWindowIcon 등)
-TOPLEVEL_CLASS_PREFIX = "Qt5"
-TOPLEVEL_CLASS_SUFFIX = "QWindowIcon"
-# 게임이 아닌 관리창은 이 자식 창을 갖는다 -> 후보에서 제외
-MANAGER_CHILD_CLASSES = ("MuMuNativeWindow",)
+
+@dataclass(frozen=True)
+class EmulatorProfile:
+    """아는 앱플레이어 하나의 창 생김새.
+
+    전부 '힌트'다. 여기 없는 앱플레이어도 generic 경로로 동작한다.
+    """
+    name: str
+    render_classes: tuple[str, ...] = ()     # 안드로이드 화면이 그려지는 자식 창 클래스
+    render_titles: tuple[str, ...] = ()      # 그 자식 창의 제목
+    title_hints: tuple[str, ...] = ()        # 최상위 창 제목에 들어가는 말
+    exclude_child_classes: tuple[str, ...] = ()   # 이 자식이 있으면 게임 창이 아니다
+
+
+# 실측으로 확인한 것은 MuMuPlayer 12 뿐이다. 나머지는 공개된 창 클래스 정보를 적어
+# 두었고, 틀리더라도 generic 경로로 잡히므로 동작에는 지장이 없다.
+EMULATOR_PROFILES: tuple[EmulatorProfile, ...] = (
+    EmulatorProfile(
+        name="MuMuPlayer",
+        render_classes=("nemuwin",),
+        render_titles=("nemudisplay",),
+        title_hints=("MuMu", "Android Device"),
+        # 멀티 인스턴스 관리창(썸네일 창)은 게임 화면이 아니다.
+        exclude_child_classes=("MuMuNativeWindow",),
+    ),
+    EmulatorProfile(
+        name="LDPlayer",
+        render_classes=("RenderWindow", "subWin", "TheRender"),
+        title_hints=("LDPlayer", "뮤뮤", "雷电"),
+    ),
+    EmulatorProfile(
+        name="NoxPlayer",
+        render_classes=("ScreenBoardClass", "subWin", "SDL_app"),
+        title_hints=("Nox", "夜神"),
+    ),
+    EmulatorProfile(
+        name="BlueStacks",
+        render_classes=("BlueStacksApp", "plrNativeInputWindowClass"),
+        title_hints=("BlueStacks",),
+    ),
+    EmulatorProfile(
+        name="MEmu",
+        render_classes=("SDL_app",),
+        title_hints=("MEmu",),
+    ),
+    EmulatorProfile(
+        name="Google Play Games",
+        title_hints=("Google Play Games",),
+    ),
+)
+
+# 아래 두 개는 예전 이름이다. 지금은 프로필 표에서 뽑아 쓴다.
+RENDER_CLASSES = tuple(c for p in EMULATOR_PROFILES for c in p.render_classes)
+RENDER_TITLES = tuple(t for p in EMULATOR_PROFILES for t in p.render_titles)
+MANAGER_CHILD_CLASSES = tuple(c for p in EMULATOR_PROFILES
+                              for c in p.exclude_child_classes)
 
 PW_RENDERFULLCONTENT = 0x00000002
 
@@ -68,7 +132,7 @@ def enable_dpi_awareness() -> None:
 
 @dataclass
 class Candidate:
-    """LDPlayer/MuMuPlayer 후보 창 하나에 대한 평가 결과."""
+    """앱플레이어 후보 창 하나에 대한 평가 결과."""
     hwnd: int                 # 캡처/클릭 대상 (렌더 자식 창)
     top_hwnd: int             # 최상위 창 (포커스 대상)
     title: str
@@ -79,15 +143,19 @@ class Candidate:
     tab_score: float = 0.0    # 상단 고정 탭 이미지 유사도
     board_score: float = 0.0  # 5x5 격자 검출 신뢰도
     ok: bool = False
+    emulator: str = ""        # 알아본 앱플레이어 이름 (모르면 빈 문자열)
 
     @property
     def score(self) -> float:
-        return self.tab_score + self.board_score
+        # 아는 앱플레이어를 살짝 우대한다. 게임판 점수가 같을 때만 갈린다.
+        return self.tab_score + self.board_score + (0.01 if self.emulator else 0.0)
 
     def describe(self) -> str:
         mark = "O" if self.ok else "X"
+        who = self.emulator or "알 수 없는 창"
         return (f"[{mark}] hwnd=0x{self.hwnd:X} {self.width}x{self.height} "
-                f"'{self.title}' 탭={self.tab_score:.2f} 격자={self.board_score:.2f} "
+                f"[{who}] '{self.title}' 탭={self.tab_score:.2f} "
+                f"격자={self.board_score:.2f} "
                 f"| {', '.join(self.reasons) if self.reasons else '-'}")
 
 
@@ -108,29 +176,99 @@ def _child_windows(hwnd: int) -> list[tuple[int, str, str]]:
     return out
 
 
-def _find_render_child(top_hwnd: int) -> int | None:
-    """최상위 창 아래에서 안드로이드 화면이 그려지는 자식 창을 찾는다."""
-    best = None
-    best_area = 0
-    for child, cls, title in _child_windows(top_hwnd):
-        if cls not in RENDER_CLASSES and title not in RENDER_TITLES:
-            continue
-        try:
-            l, t, r, b = win32gui.GetClientRect(child)
-        except Exception:
-            continue
-        area = (r - l) * (b - t)
-        if area > best_area:
-            best_area, best = area, child
-    return best
+def _pid_of(hwnd: int) -> int:
+    pid = wintypes.DWORD()
+    _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return pid.value
 
 
-def enumerate_candidates(min_size: int = 200) -> list[Candidate]:
-    """화면에 떠 있는 MuMuPlayer 후보 창을 모두 찾는다 (아직 검증 전)."""
+def _client_size(hwnd: int) -> tuple[int, int]:
+    try:
+        l, t, r, b = win32gui.GetClientRect(hwnd)
+        return r - l, b - t
+    except Exception:
+        return 0, 0
+
+
+# 앱플레이어일 수 없는 창들. 바탕화면·작업표시줄·IME 같은 셸 창이다.
+SHELL_CLASSES = frozenset({
+    "Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd",
+    "Windows.UI.Core.CoreWindow", "MSCTFIME UI", "IME", "tooltips_class32",
+    "TaskListThumbnailWnd", "ForegroundStaging", "MultitaskingViewFrame",
+})
+
+
+def _match_profile(title: str, children: list[tuple[int, str, str]]
+                   ) -> tuple[EmulatorProfile | None, bool]:
+    """어떤 앱플레이어인지 알아본다.
+
+    반환: (프로필, 확실한가)
+
+    **제목만 맞는 것은 확실한 근거가 아니다.** 실측: 이 저장소 페이지를 띄운
+    브라우저 창의 제목에 'MuMu' 가 들어 있어서 MuMuPlayer 로 잡혔다. 그러면
+    엉뚱한 창이 1순위 후보로 올라가 캡처·격자 검사를 헛돈다.
+
+    그래서 자식 창의 클래스/제목이 맞을 때(구조가 맞을 때)만 '확실'로 보고,
+    제목 힌트만 맞으면 후보로는 올리되 앱플레이어로 단정하지 않는다.
+    """
+    child_classes = {c for _, c, _ in children}
+    child_titles = {t for _, _, t in children}
+    for prof in EMULATOR_PROFILES:
+        if child_classes & set(prof.render_classes):
+            return prof, True
+        if child_titles & set(prof.render_titles):
+            return prof, True
+    for prof in EMULATOR_PROFILES:
+        if any(hint.lower() in title.lower() for hint in prof.title_hints if hint):
+            return prof, False
+    return None, False
+
+
+def _find_render_child(top_hwnd: int, prof: EmulatorProfile | None,
+                       children: list[tuple[int, str, str]],
+                       min_size: int) -> int | None:
+    """안드로이드 화면이 그려지는 자식 창을 고른다.
+
+    1) 아는 앱플레이어면 그 프로필의 렌더 클래스/제목으로 정확히 집는다.
+    2) 모르면 **가장 큰 자식 창**을 쓴다. 앱플레이어는 대체로 화면 전체를 채우는
+       렌더 자식 창을 하나 갖는다.
+    3) 쓸 만한 자식이 없으면 None 을 돌려준다. 그때는 최상위 창을 직접 캡처한다
+       (자식 창 없이 최상위에 바로 그리는 앱플레이어도 있다).
+    """
+    named: list[tuple[int, int]] = []      # (면적, hwnd)
+    biggest: list[tuple[int, int]] = []
+    for child, cls, title in children:
+        w, h = _client_size(child)
+        if w < min_size or h < min_size:
+            continue
+        biggest.append((w * h, child))
+        if prof and (cls in prof.render_classes or title in prof.render_titles):
+            named.append((w * h, child))
+    pool = named or biggest
+    if not pool:
+        return None
+    return max(pool)[1]
+
+
+def enumerate_candidates(min_size: int = 200, title_hint: str = "",
+                         max_candidates: int = 16) -> list[Candidate]:
+    """앱플레이어로 보이는 창을 모두 찾는다 (아직 게임판 검증 전).
+
+    아는 앱플레이어든 모르는 앱플레이어든 일단 후보로 올린다. 진짜 판정은
+    explore.pick_window 가 화면 안의 5x5 게임판으로 한다.
+
+    title_hint 를 주면 창 제목에 그 말이 든 창만 본다. 앱플레이어를 여러 개
+    띄워 두고 특정 창만 쓰고 싶을 때 config.json 으로 지정한다.
+    """
     found: list[Candidate] = []
+
+    own_pid = os.getpid()
 
     def cb(hwnd, _):
         if not win32gui.IsWindowVisible(hwnd):
+            return True
+        if win32gui.IsIconic(hwnd):
+            # 최소화된 창은 PrintWindow 로도 제대로 안 잡힌다.
             return True
         try:
             cls = win32gui.GetClassName(hwnd)
@@ -138,35 +276,56 @@ def enumerate_candidates(min_size: int = 200) -> list[Candidate]:
         except Exception:
             return True
 
-        reasons: list[str] = []
-        if not (cls.startswith(TOPLEVEL_CLASS_PREFIX) and cls.endswith(TOPLEVEL_CLASS_SUFFIX)):
+        if cls in SHELL_CLASSES:
+            return True
+        if _pid_of(hwnd) == own_pid:
+            # 매크로 자신의 GUI 창. 자기를 캡처할 이유가 없다.
+            return True
+        if title_hint and title_hint.lower() not in title.lower():
+            return True
+
+        # 최상위 창 자체가 너무 작으면 앱플레이어일 수 없다.
+        tw, th = _client_size(hwnd)
+        if tw < min_size or th < min_size:
             return True
 
         children = _child_windows(hwnd)
-        child_classes = {c for _, c, _ in children}
-        if child_classes & set(MANAGER_CHILD_CLASSES):
-            # 멀티 인스턴스 관리창(썸네일 창). 게임 화면이 아니다.
-            return True
+        prof, sure = _match_profile(title, children)
 
-        render = _find_render_child(hwnd)
+        if prof and sure and prof.exclude_child_classes:
+            if {c for _, c, _ in children} & set(prof.exclude_child_classes):
+                # 멀티 인스턴스 관리창(썸네일 창). 게임 화면이 아니다.
+                return True
+
+        reasons: list[str] = []
+        render = _find_render_child(hwnd, prof if sure else None, children, min_size)
         if render is None:
-            return True
+            # 자식 창 없이 최상위에 바로 그리는 경우. 최상위를 그대로 쓴다.
+            render, w, h = hwnd, tw, th
+            reasons.append("렌더 자식 창이 없어 최상위 창을 직접 캡처")
+        else:
+            w, h = _client_size(render)
+            reasons.append(f"렌더창({win32gui.GetClassName(render)})")
 
-        l, t, r, b = win32gui.GetClientRect(render)
-        w, h = r - l, b - t
-        if w < min_size or h < min_size:
-            return True
-
-        reasons.append(f"렌더창 발견({win32gui.GetClassName(render)})")
+        if sure:
+            reasons.append(f"{prof.name} 로 인식")
+        elif prof:
+            reasons.append(f"제목만 {prof.name} 같음 (게임판 검사로 판정)")
+        else:
+            reasons.append("모르는 창 (게임판 검사로 판정)")
         if h > w:
             reasons.append("세로 화면")
+
         found.append(Candidate(hwnd=render, top_hwnd=hwnd, title=title, cls=cls,
-                               width=w, height=h, reasons=reasons))
+                               width=w, height=h, reasons=reasons,
+                               emulator=prof.name if sure else ""))
         return True
 
     win32gui.EnumWindows(cb, None)
-    found.sort(key=lambda c: c.width * c.height, reverse=True)
-    return found
+    # 확실한 앱플레이어 먼저, 그다음 큰 창 먼저. 모르는 창까지 전부 캡처해서
+    # 검사하면 느리므로 상위 몇 개만 넘긴다.
+    found.sort(key=lambda c: (bool(c.emulator), c.width * c.height), reverse=True)
+    return found[:max_candidates]
 
 
 # --------------------------------------------------------------------------
@@ -227,7 +386,7 @@ def capture_client(hwnd: int) -> np.ndarray | None:
 # 고정된 창 핸들
 # --------------------------------------------------------------------------
 
-class MuMuWindow:
+class EmulatorWindow:
     """검증을 통과해 '고정된' 하나의 창. 실행 중 대상이 바뀌지 않는다."""
 
     def __init__(self, hwnd: int, top_hwnd: int, title: str = ""):

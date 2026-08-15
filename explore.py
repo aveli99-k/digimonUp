@@ -30,7 +30,7 @@ import numpy as np
 
 import overlay
 from board import Grid, N, detect_board
-from mumu_window import MuMuWindow, capture_client, enumerate_candidates
+from emulator_window import EmulatorWindow, capture_client, enumerate_candidates
 from pathfind import PlanKind, plan_route
 from recognize import (Kind, Scene, TemplateSet, analyze, find_blocked_toast,
                        find_green_button, find_top_tab, hsv_of, load_templates,
@@ -44,7 +44,16 @@ class ExploreConfig:
     # 창 검증
     top_tab_min: float = 0.60          # 상단 고정 탭 템플릿 최소 유사도
     board_min: float = 0.45            # 5x5 격자 검출 최소 신뢰도
+    # 앱플레이어로 알아보지 못한 창에 요구하는 더 높은 기준.
+    # 이제는 모르는 창까지 후보로 올리므로(그래야 새 앱플레이어에서도 동작한다)
+    # 게임과 무관한 창이 얻어걸릴 여지가 생긴다. 실측: 브라우저 창이 0.48~0.55 로
+    # 기본 기준 0.45 를 넘었다. 진짜 게임 화면은 0.91 이라 넉넉히 갈린다.
+    unknown_board_min: float = 0.70
     require_top_tab: bool = True       # 탭 템플릿이 있을 때만 강제된다
+    # 앱플레이어를 여러 개 띄웠거나 자동 탐지가 엉뚱한 창을 고를 때, 창 제목의
+    # 일부를 적어 두면 그 창만 후보로 본다. 비워 두면 전부 본다.
+    window_title_hint: str = ""
+    window_min_size: int = 200         # 이보다 작은 창은 앱플레이어일 수 없다
 
     # 이동
     click_settle_sec: float = 0.12     # 클릭 직후 최소 대기
@@ -108,7 +117,7 @@ class ExploreEngine:
         self.status = status
         self.preview = preview
         self.stop_event = threading.Event()
-        self.window: MuMuWindow | None = None
+        self.window: EmulatorWindow | None = None
         self.templates: dict[str, TemplateSet] = load_templates()
         self.stats = ExploreStats()
         self.last_frame: np.ndarray | None = None
@@ -139,7 +148,7 @@ class ExploreEngine:
             raise Stopped()
 
     # ------------------------------------------------------------ 창 고정
-    def pick_window(self) -> MuMuWindow | None:
+    def pick_window(self) -> EmulatorWindow | None:
         """후보 창을 모두 평가해서 조건을 만족하는 창 하나를 고정한다.
 
         창 제목만 믿지 않는다. 두 조건을 함께 본다.
@@ -147,9 +156,14 @@ class ExploreEngine:
           2) 화면 안에 5x5 게임판 격자 테두리가 있는가
         """
         self.candidates_report = []
-        cands = enumerate_candidates()
+        cands = enumerate_candidates(min_size=self.cfg.window_min_size,
+                                     title_hint=self.cfg.window_title_hint)
         if not cands:
-            self.log("[창] MuMuPlayer 후보 창을 찾지 못했습니다.")
+            self.log("[창] 앱플레이어로 볼 만한 창을 하나도 찾지 못했습니다. "
+                     "앱플레이어가 실행 중이고 최소화되어 있지 않은지 확인하세요.")
+            if self.cfg.window_title_hint:
+                self.log(f"[창] config.json 의 window_title_hint="
+                         f"'{self.cfg.window_title_hint}' 때문에 걸러졌을 수 있습니다.")
             return None
 
         tab_tpl = self.templates["top_tab"] if self.cfg.require_top_tab else None
@@ -176,10 +190,15 @@ class ExploreEngine:
                 cand.tab_score = 0.0
                 cand.reasons.append("상단 탭 템플릿 없음(격자만으로 판정)")
 
-            board_ok = cand.board_score >= self.cfg.board_min
+            # 앱플레이어라고 확신하지 못한 창에는 더 높은 기준을 요구한다.
+            need = (self.cfg.board_min if cand.emulator
+                    else max(self.cfg.board_min, self.cfg.unknown_board_min))
+            board_ok = cand.board_score >= need
             tab_ok = (not tab_tpl) or (cand.tab_score >= self.cfg.top_tab_min)
             if not board_ok:
-                cand.reasons.append(f"격자 신뢰도 부족 {cand.board_score:.2f}")
+                cand.reasons.append(
+                    f"격자 신뢰도 부족 {cand.board_score:.2f} (기준 {need:.2f}"
+                    + ("" if cand.emulator else ", 모르는 창이라 기준이 높음") + ")")
             if not tab_ok:
                 cand.reasons.append(f"상단 탭 불일치 {cand.tab_score:.2f}")
             cand.ok = board_ok and tab_ok
@@ -192,10 +211,13 @@ class ExploreEngine:
             self.log("[창] " + line)
 
         if best is None:
-            self.log("[창] 두 조건(상단 탭 + 5x5 격자)을 만족하는 창이 없습니다.")
+            self.log(f"[창] 후보 {len(cands)}개를 모두 봤지만 5x5 게임판이 있는 창이 "
+                     f"없습니다. 탐사 화면을 띄운 상태인지 확인하세요.")
+            self.log("[창] 창은 뜨는데 계속 실패하면 tools/detect_windows.py 를 "
+                     "실행해 어떤 창이 어떻게 보이는지 확인할 수 있습니다.")
             return None
 
-        win = MuMuWindow(best.hwnd, best.top_hwnd, best.title)
+        win = EmulatorWindow(best.hwnd, best.top_hwnd, best.title)
         self.log(f"[창] 고정: HWND=0x{best.hwnd:X} ({best.width}x{best.height}) "
                  f"'{best.title}' 격자={best.board_score:.2f} 탭={best.tab_score:.2f}")
         return win

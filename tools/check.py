@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-# 이 도구는 tools/ 안에 있지만 루트의 common / mumu_window 등을 가져다 쓴다.
+# 이 도구는 tools/ 안에 있지만 루트의 common / emulator_window 등을 가져다 쓴다.
 # 실행 방식(python tools/x.py, 배치 파일, IDE)에 상관없이 import 가 되도록
 # 루트를 sys.path 에 직접 넣는다. 다른 import 보다 먼저 와야 한다.
 import os

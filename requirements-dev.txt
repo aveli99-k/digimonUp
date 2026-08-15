@@ -1,0 +1,8 @@
+# 개발/테스트용 추가 패키지
+#   설치:  pip install -r requirements.txt -r requirements-dev.txt
+#   실행:  python -m pytest tests -q
+
+-r requirements.txt
+
+pytest>=8.0
+pyinstaller>=6.0        # scripts/build_exe.bat 로 단일 EXE 를 만들 때만 필요

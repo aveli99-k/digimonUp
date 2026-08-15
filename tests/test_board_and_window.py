@@ -7,10 +7,10 @@ import numpy as np
 
 import board
 import explore
-import mumu_window
+import emulator_window
 import recognize
 import synth
-from mumu_window import Candidate
+from emulator_window import Candidate
 
 REAL = "tests/fixtures/explore_sample1.png"
 
@@ -123,7 +123,7 @@ def test_여러_창_중_올바른_창을_고른다(monkeypatch, blank_templates)
     ]
     frames = {0x111: other, 0x222: game, 0x333: other}
 
-    monkeypatch.setattr(explore, "enumerate_candidates", lambda: cands)
+    monkeypatch.setattr(explore, "enumerate_candidates", lambda **kw: cands)
     monkeypatch.setattr(explore, "capture_client", lambda h: frames[h])
 
     engine = explore.ExploreEngine(log=lambda *_: None)
@@ -146,7 +146,7 @@ def test_상단_탭_템플릿이_있으면_탭까지_맞아야_고른다(monkeyp
                   width=tabbed.shape[1], height=tabbed.shape[0]),
     ]
     frames = {0xAAA: plain, 0xBBB: tabbed}
-    monkeypatch.setattr(explore, "enumerate_candidates", lambda: cands)
+    monkeypatch.setattr(explore, "enumerate_candidates", lambda **kw: cands)
     monkeypatch.setattr(explore, "capture_client", lambda h: frames[h])
 
     engine = explore.ExploreEngine(log=lambda *_: None)
@@ -160,7 +160,7 @@ def test_후보가_하나도_조건을_만족하지_않으면_None(monkeypatch, 
     other = synth.make_non_game_window()
     cands = [Candidate(hwnd=0x1, top_hwnd=0x0, title="MuMuPlayer", cls="Qt5QWindowIcon",
                        width=other.shape[1], height=other.shape[0])]
-    monkeypatch.setattr(explore, "enumerate_candidates", lambda: cands)
+    monkeypatch.setattr(explore, "enumerate_candidates", lambda **kw: cands)
     monkeypatch.setattr(explore, "capture_client", lambda h: other)
     engine = explore.ExploreEngine(log=lambda *_: None)
     assert engine.pick_window() is None
@@ -168,8 +168,70 @@ def test_후보가_하나도_조건을_만족하지_않으면_None(monkeypatch, 
 
 def test_관리창은_후보에서_제외되는_규칙이_있다():
     """멀티 인스턴스 관리창(MuMuNativeWindow 자식)을 거르는 목록이 살아 있는지."""
-    assert "MuMuNativeWindow" in mumu_window.MANAGER_CHILD_CLASSES
-    assert "nemuwin" in mumu_window.RENDER_CLASSES
+    assert "MuMuNativeWindow" in emulator_window.MANAGER_CHILD_CLASSES
+    assert "nemuwin" in emulator_window.RENDER_CLASSES
+
+
+# ------------------------------------- 여러 앱플레이어 지원 (창 클래스에 의존하지 않기)
+def test_제목만_비슷한_창은_앱플레이어로_단정하지_않는다():
+    """실측 회귀: 이 저장소 페이지를 띄운 브라우저 창의 제목에 'MuMu' 가 들어 있어
+    MuMuPlayer 로 잡혔다. 그러면 엉뚱한 창이 1순위 후보가 된다.
+
+    제목은 힌트일 뿐이고, 자식 창 구조가 맞아야 앱플레이어로 확정한다.
+    """
+    browser = [(0x1, "Chrome_WidgetWin_1", "")]
+    prof, sure = emulator_window._match_profile(
+        "aveli99-k/digimonUp: MuMuPlayer 디지몬 탐사 - Whale", browser)
+    assert sure is False, "제목만 보고 앱플레이어로 확정했습니다"
+
+    real = [(0x2, "nemuwin", "nemudisplay")]
+    prof, sure = emulator_window._match_profile("Android Device", real)
+    assert sure is True and prof.name == "MuMuPlayer"
+
+
+def test_모르는_창에는_더_높은_격자_기준을_요구한다(monkeypatch, blank_templates):
+    """모르는 창까지 후보로 올리므로 무관한 창이 얻어걸릴 여지가 생겼다.
+
+    실측: 브라우저 창이 격자 0.48~0.55 로 기본 기준 0.45 를 넘었다.
+    진짜 게임 화면은 0.91 이므로, 모르는 창에만 기준을 높여 갈라낸다.
+    """
+    game = synth.make_board(["....." , ".P..X", "..X..", ".....", "....i"])
+
+    # 같은 화면인데 하나는 앱플레이어로 알아본 창, 하나는 모르는 창
+    known = Candidate(hwnd=0x11, top_hwnd=0x10, title="Android Device",
+                      cls="Qt5QWindowIcon", width=game.shape[1],
+                      height=game.shape[0], emulator="MuMuPlayer")
+    unknown = Candidate(hwnd=0x22, top_hwnd=0x20, title="어떤 앱",
+                        cls="Chrome_WidgetWin_1", width=game.shape[1],
+                        height=game.shape[0])
+
+    monkeypatch.setattr(explore, "capture_client", lambda h: game)
+
+    # 게임판 신뢰도가 기본 기준은 넘지만 '모르는 창' 기준에는 못 미치는 상황
+    monkeypatch.setattr(explore, "detect_board",
+                        lambda img, min_confidence=0.0: board.Grid(
+                            xs=[0, 1, 2, 3, 4, 5], ys=[0, 1, 2, 3, 4, 5],
+                            confidence=0.55, detail={}))
+
+    monkeypatch.setattr(explore, "enumerate_candidates", lambda **kw: [unknown])
+    assert explore.ExploreEngine(log=lambda *_: None).pick_window() is None, \
+        "모르는 창이 낮은 신뢰도로 통과했습니다"
+
+    monkeypatch.setattr(explore, "enumerate_candidates", lambda **kw: [known])
+    win = explore.ExploreEngine(log=lambda *_: None).pick_window()
+    assert win is not None and win.hwnd == 0x11, \
+        "아는 앱플레이어인데 같은 신뢰도로 거절했습니다"
+
+
+def test_셸_창은_후보에서_제외한다():
+    """바탕화면(Progman/WorkerW)이나 작업표시줄이 후보로 올라오면 안 된다."""
+    for cls in ("Progman", "WorkerW", "Shell_TrayWnd"):
+        assert cls in emulator_window.SHELL_CLASSES
+
+
+def test_여러_앱플레이어_프로필이_등록돼_있다():
+    names = {p.name for p in emulator_window.EMULATOR_PROFILES}
+    assert {"MuMuPlayer", "LDPlayer", "NoxPlayer", "BlueStacks"} <= names
 
 
 # --------------------------------------------- 격자 위상 안정성 (실측 회귀)
