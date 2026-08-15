@@ -1,0 +1,28 @@
+# 파이썬
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+
+# 빌드 산출물 (build_exe.bat 으로 언제든 다시 만든다)
+build/
+dist/
+*.spec.bak
+
+# 실행하면서 생기는 것들
+# debug/ 는 인식 디버그 이미지가 쌓이는 곳이라 금방 수십 MB 가 된다.
+debug/
+macro.log
+macro.log*
+check_result.png
+
+# 바로가기 (create_shortcut.ps1 로 만든다)
+*.lnk
+
+# 편집기
+.vscode/
+.idea/
+*.swp
+.DS_Store
