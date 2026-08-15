@@ -30,6 +30,7 @@ import numpy as np
 
 import counters
 import overlay
+from common import is_stop_key_pressed, vk_of
 from board import Grid, N, detect_board
 from emulator_window import EmulatorWindow, capture_client, enumerate_candidates
 from pathfind import PlanKind, plan_route
@@ -97,6 +98,11 @@ class ExploreConfig:
     green_button_max_uses: int = 0      # 0 = 제한 없음
     blocked_wait_sec: float = 2.0
 
+    # 중지 키 (창 포커스와 무관하게 어디서 눌러도 먹는다)
+    # 매크로가 마우스를 계속 움직이는 중에는 GUI 의 정지 버튼을 누르기가 까다롭다.
+    # 빈 문자열이면 키로는 멈추지 않는다.
+    stop_key: str = "F12"
+
     # 디버그
     save_debug: bool = True
 
@@ -144,6 +150,8 @@ class ExploreEngine:
         self.locked_grid: Grid | None = None
         self._locked_size: tuple[int, int] | None = None
         self._grid_votes: deque = deque(maxlen=9)
+        # 중지 키의 가상 키 코드. 빈 문자열이면 0 이라 키 검사를 건너뛴다.
+        self._stop_vk = vk_of(self.cfg.stop_key) if self.cfg.stop_key else 0
         # 왼쪽 아래 아이템 개수. 못 읽으면 항목이 None 이다.
         self.counts = counters.Counters()
         self._last_counts_line = ""
@@ -157,8 +165,18 @@ class ExploreEngine:
 
         클릭 직전, 분석 직후 등 모든 갈림길에서 호출한다. 덕분에 '분석 중에
         정지를 눌렀는데 분석이 끝난 뒤 이전 경로가 뒤늦게 실행되는' 일이 없다.
+
+        중지 키(기본 F12)도 여기서 함께 본다. 매크로가 마우스를 계속 움직이는
+        중에는 GUI 의 정지 버튼을 겨냥해서 누르기가 까다롭기 때문이다.
+        전역 감지라 게임 창이 앞에 있어도 먹는다.
         """
         if self.stop_event.is_set():
+            raise Stopped()
+        if self._stop_vk and is_stop_key_pressed(self._stop_vk):
+            # 한 번 감지하면 stop_event 를 세워 둔다. 키에서 손을 떼도 계속
+            # 정지 상태이고, GUI 도 같은 깃발을 보므로 상태가 어긋나지 않는다.
+            self.stop_event.set()
+            self.log(f"[정지] {self.cfg.stop_key} 키를 눌러 중단합니다.")
             raise Stopped()
 
     # ------------------------------------------------------------ 창 고정
@@ -638,6 +656,9 @@ class ExploreEngine:
             self.status("창을 찾지 못함")
             return
         self.status(f"실행 중 (HWND 0x{self.window.hwnd:X})")
+        if self._stop_vk:
+            self.log(f"[정지] 멈추려면 GUI 의 정지 버튼 또는 "
+                     f"{self.cfg.stop_key} 키를 누르세요 (어느 창에서든 먹습니다).")
 
         lost = 0
         try:

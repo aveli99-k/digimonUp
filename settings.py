@@ -23,7 +23,12 @@ def load_explore_config():
     from explore import ExploreConfig
 
     cfg = ExploreConfig()
-    section = load_raw().get("explore", {})
+    raw = load_raw()
+    # 중지 키는 두 기능이 함께 쓰므로 최상위 stop_key 를 기본으로 삼는다.
+    # explore 절에 따로 적으면 그것이 우선한다.
+    if raw.get("stop_key"):
+        cfg.stop_key = str(raw["stop_key"])
+    section = raw.get("explore", {})
     for key, value in section.items():
         if hasattr(cfg, key):
             setattr(cfg, key, type(getattr(cfg, key))(value))

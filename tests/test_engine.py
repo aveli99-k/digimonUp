@@ -598,3 +598,47 @@ def test_개수_읽기가_실패해도_매크로는_계속_돈다(monkeypatch):
     monkeypatch.setattr(explore.counters, "read", boom)
     eng._update_counts(img)              # 예외가 밖으로 나오면 안 된다
     assert eng.cfg.watch_counters is False, "실패한 뒤에도 계속 읽으려 합니다"
+
+
+# ------------------------------------------------------- 중지 키 (전역 단축키)
+def test_중지키를_누르면_멈추고_클릭이_나가지_않는다(monkeypatch):
+    """매크로가 마우스를 움직이는 중에는 GUI 정지 버튼을 겨냥하기 어렵다.
+    그래서 창 포커스와 무관한 전역 단축키로도 멈출 수 있어야 한다.
+    """
+    img = _frame((1, 1))
+    eng = _engine([img] * 40, stop_key="F12")
+    assert eng._stop_vk == 0x7B, "F12 의 가상 키 코드가 아닙니다"
+
+    monkeypatch.setattr(explore, "is_stop_key_pressed", lambda vk: vk == 0x7B)
+    with pytest.raises(Stopped):
+        eng._check_stop()
+    assert eng.stop_event.is_set(), "키를 뗀 뒤에도 정지 상태로 남아야 합니다"
+
+    grid = board.detect_board(img)
+    with pytest.raises(Stopped):
+        eng._do_move(grid, (1, 1), (1, 2), "RIGHT")
+    assert eng.window.clicks == [], "중지키를 눌렀는데 클릭이 나갔습니다"
+
+
+def test_중지키를_누르지_않으면_계속_돈다(monkeypatch):
+    eng = _engine([_frame((1, 1))] * 10, stop_key="F12")
+    monkeypatch.setattr(explore, "is_stop_key_pressed", lambda vk: False)
+    eng._check_stop()          # 예외가 나면 안 된다
+
+
+def test_중지키를_비워두면_키_검사를_하지_않는다(monkeypatch):
+    """키를 쓰고 싶지 않은 사람도 있다."""
+    eng = _engine([_frame((1, 1))] * 10, stop_key="")
+    assert eng._stop_vk == 0
+    called = []
+    monkeypatch.setattr(explore, "is_stop_key_pressed",
+                        lambda vk: called.append(vk) or True)
+    eng._check_stop()          # 검사 자체를 건너뛰므로 멈추지 않는다
+    assert called == [], "중지키를 비웠는데도 키를 검사했습니다"
+
+
+def test_중지키는_config_최상위_stop_key_를_따른다():
+    """1번 기능과 같은 키를 쓴다. explore 절에 적으면 그것이 우선한다."""
+    import settings
+    cfg = settings.load_explore_config()
+    assert cfg.stop_key, "config.json 의 stop_key 를 못 읽었습니다"
