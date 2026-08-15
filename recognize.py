@@ -56,6 +56,9 @@ class Detection:
     confidence: float
     bbox: tuple[int, int, int, int] | None = None
     note: str = ""
+    # 플레이어일 때만 채워지는 실제 스프라이트 픽셀 마스크.
+    # 이웃 칸의 칩/아이템을 셀 때 플레이어 몸을 빼는 데 쓴다.
+    sprite: np.ndarray | None = None
 
 
 @dataclass
@@ -340,6 +343,8 @@ FOOT_LIFT = 0.20        # 셀 높이 대비
 PLAYER_TARGET_H_RATIO = 1.4
 PLAYER_SCALES = (0.85, 1.0, 1.15)
 PLAYER_TEMPLATE_MIN = 0.62
+# 색 기반 덩어리를 고를 때 '따뜻한 색 비율'에 줄 무게. 크기가 주된 근거다.
+WARM_WEIGHT = 0.3
 PLAYER_BODY_MIN = 0.55
 
 
@@ -427,15 +432,29 @@ def _player_blob(img: np.ndarray, grid: Grid, hsv: np.ndarray | None = None):
             continue
         warm = mask_warm(sub[y:y + h, x:x + w],
                          None if sub_hsv is None else sub_hsv[y:y + h, x:x + w]).mean()
-        score = area / cell_area + warm
+        # 크기가 주된 근거이고, 따뜻한 색은 거들 뿐이다.
+        #
+        # 예전에는 둘을 1:1 로 더했다. 그러면 **작지만 새빨간 것이 큰 것을 이긴다.**
+        # 주황칩이 딱 그렇다. 플레이어 바로 옆의 칩을 플레이어로 오인하면 위치가
+        # 통째로 틀어지고, 칩이 걸음수보다 중요한 지금은 손해가 크다.
+        # (실측 면적비/warm: 실제 플레이어 1.37/0.17, 칩 0.37/0.04 -> 원래도 안전하지만
+        #  합성 화면처럼 칩이 단색 주황(warm 1.00)이면 0.22+1.00 으로 뒤집힌다.)
+        score = area / cell_area + WARM_WEIGHT * warm
         if best is None or score > best[0]:
             best = (score,
                     (bx0 + x, by0 + y, bx0 + x + w, by0 + y + h),
                     area / cell_area,
-                    (bx0 + float(centroids[i][0]), by0 + float(centroids[i][1])))
+                    (bx0 + float(centroids[i][0]), by0 + float(centroids[i][1])),
+                    i)
     if best is None:
         return None
-    return best[1], float(np.clip(best[2], 0.0, 1.0)), best[3]
+
+    # 스프라이트가 실제로 차지한 픽셀만 담은 마스크(화면 전체 크기).
+    # 이웃 칸에서 칩을 셀 때 플레이어의 주황 갈기를 빼는 데 쓴다. 칸을 통째로
+    # 빼면 그 칸의 칩까지 안 보이므로, 픽셀 단위로 빼야 한다.
+    sprite = np.zeros(img.shape[:2], np.uint8)
+    sprite[by0:by1, bx0:bx1] = (labels == best[4]).astype(np.uint8)
+    return best[1], float(np.clip(best[2], 0.0, 1.0)), best[3], sprite
 
 
 def track_player_fast(img: np.ndarray, grid: Grid,
@@ -541,7 +560,8 @@ def detect_player(img: np.ndarray, grid: Grid, tpl: dict[str, TemplateSet],
         note += f" (강조칸 역산은 {hint} 였지만 이미지 결과를 따름)"
         conf = max(0.0, conf - 0.05)
 
-    return Detection(Kind.PLAYER, row, col, float(conf), bbox, note)
+    return Detection(Kind.PLAYER, row, col, float(conf), bbox, note,
+                     sprite=blob[3] if blob else None)
 
 
 # --------------------------------------------------------------------------
@@ -554,6 +574,10 @@ OBSTACLE_FRAC = 0.32
 OBSTACLE_FRAC_WEAK = 0.18     # 가려졌을 때를 위한 완화 기준
 ITEM_WARM_FRAC = 0.10
 GOAL_TEMPLATE_MIN = 0.62
+# 칩 템플릿은 카드 전체가 아니라 **중심(번개 무늬)** 이다. 셀 높이에 맞춰
+# 정규화하지 않고 배율만 넓게 준다. 템플릿을 찍은 창과 실행 창의 크기가
+# 달라도 이 범위 안에서 맞는다.
+GOAL_SCALES = (0.6, 0.75, 0.9, 1.0, 1.15, 1.35, 1.6)
 GOAL_ORANGE_FRAC = 0.035
 
 
@@ -610,6 +634,19 @@ def analyze(img: np.ndarray, grid: Grid, tpl: dict[str, TemplateSet],
     if player is None:
         notes.append("플레이어를 찾지 못했습니다.")
 
+    # 플레이어 스프라이트가 차지한 **픽셀만** 마스크에서 지운다.
+    #
+    # 예전에는 '플레이어 상자와 25% 이상 겹치는 칸'을 통째로 검사에서 뺐다.
+    # 그런데 실측하면 스프라이트가 175x141px 이고 셀은 108x88px 이라, 상하좌우
+    # 이웃 칸이 30~36% 씩 가려진다. 즉 **플레이어 바로 옆 칸의 칩을 못 봤다.**
+    # 칩이 걸음수보다 중요하므로 이건 그냥 손해다.
+    #
+    # 픽셀 단위로 빼면 디지몬의 주황 갈기는 그대로 걸러지면서 옆 칸의 칩은 보인다.
+    if player is not None and player.sprite is not None:
+        keep = 1 - player.sprite
+        m_orange = m_orange * keep
+        m_warm = m_warm * keep
+
     # --- 2) 장애물 -------------------------------------------------------
     # 템플릿 매칭은 **색만으로 판정이 안 갈리는 칸에서만** 돌린다. 색 비율이
     # 이미 기준을 넘었으면 템플릿 점수가 얼마든 결과는 장애물이므로, 25칸을
@@ -636,20 +673,31 @@ def analyze(img: np.ndarray, grid: Grid, tpl: dict[str, TemplateSet],
                     Kind.OBSTACLE, r, c, max(f, ts), grid.cell_rect(r, c),
                     f"색 {f:.2f}" + (f" / 템플릿 {ts:.2f}" if ts else "")))
 
-    # --- 3) 목적지 -------------------------------------------------------
-    goal: Detection | None = None
+    # --- 3) 주황칩(목적지) ------------------------------------------------
+    # 템플릿이 있으면 **칸마다** 맞춰 본다. 예전에는 게임판 전체에서 가장 잘 맞는
+    # 하나만 찾았는데, 판에 칩이 여러 개 놓이는 것을 실측으로 확인했다(2개).
+    # 하나만 찾으면 나머지를 놓친다. 칩은 걸음수보다 중요하므로 전부 찾아야 한다.
+    #
+    # 템플릿은 **칩의 중심(번개 무늬)** 이어야 한다. 카드 전체를 쓰면 맨 아래 행에서
+    # 게임판 하단 테두리에 카드 아래쪽이 가려질 때 점수가 무너진다. 중심만 쓰면
+    # 가려져도 그대로 맞는다(실측: 셀 아래 38px 가 잘려도 무사).
+    goals: list[Detection] = []
     if tpl["goal"]:
-        bx0, by0, bx1, by1 = grid.bbox
-        pad = int(grid.cell_h * 0.4)
-        gy0 = max(0, by0 - pad)
-        sub = img[gy0:min(img.shape[0], by1 + pad), bx0:bx1]
-        score, box, label = match_best(sub, tpl["goal"], target_h=int(grid.cell_h * 0.7))
-        if score >= GOAL_TEMPLATE_MIN and box:
-            bbox = (bx0 + box[0], gy0 + box[1], bx0 + box[2], gy0 + box[3])
-            r, c = grid.clamp_locate((bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2)
-            goal = Detection(Kind.GOAL, r, c, score, bbox, f"템플릿 {label}")
-
-    goals: list[Detection] = [goal] if goal else []
+        for r in range(N):
+            for c in range(N):
+                if cells[r][c] == Kind.OBSTACLE:
+                    continue
+                if player and (r, c) == (player.row, player.col):
+                    continue
+                x0, y0, x1, y1 = grid.cell_rect(r, c)
+                score, _, label = match_best(img[y0:y1, x0:x1], tpl["goal"],
+                                             scales=GOAL_SCALES)
+                if score >= GOAL_TEMPLATE_MIN:
+                    goals.append(Detection(Kind.GOAL, r, c, score,
+                                           grid.cell_rect(r, c),
+                                           f"템플릿 {label} {score:.2f}"))
+        if goals:
+            notes.append(f"주황칩 {len(goals)}개를 템플릿으로 찾았습니다.")
 
     if not goals and (tpl["goal"] or orange_goal_without_template):
         # 템플릿이 없거나 가려진 경우: 주황 카드 색으로 찾는다.
@@ -659,7 +707,10 @@ def analyze(img: np.ndarray, grid: Grid, tpl: dict[str, TemplateSet],
         for r in range(N):
             for c in range(N):
                 rect = grid.cell_rect(r, c)
-                if cells[r][c] == Kind.OBSTACLE or _overlaps_player(rect, player):
+                if cells[r][c] == Kind.OBSTACLE:
+                    continue
+                # 스프라이트 마스크를 못 만든 경우에만 예전처럼 칸째로 뺀다.
+                if player is not None and player.sprite is None                         and _overlaps_player(rect, player):
                     continue
                 if player and (r, c) == (player.row, player.col):
                     continue
@@ -684,8 +735,10 @@ def analyze(img: np.ndarray, grid: Grid, tpl: dict[str, TemplateSet],
                 continue
             if player and (r, c) == (player.row, player.col):
                 continue
-            if _overlaps_player(rect, player):
-                continue      # 플레이어의 머리/발이 걸친 칸. 아이템이 아니다.
+            # 플레이어 픽셀은 이미 마스크에서 빠졌다. 마스크를 못 만들었을 때만
+            # 예전처럼 걸친 칸을 통째로 뺀다.
+            if player is not None and player.sprite is None                     and _overlaps_player(rect, player):
+                continue
             if tpl["item"]:
                 x0, y0, x1, y1 = rect
                 score, _, _ = match_best(img[y0:y1, x0:x1], tpl["item"],

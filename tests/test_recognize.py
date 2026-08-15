@@ -384,3 +384,51 @@ def test_빠른_추적은_템플릿을_쓰지_않아_아주_빠르다():
     elapsed = (time.time() - t) / 5
     assert pos == (1, 1)
     assert elapsed < 0.10, f"빠른 추적이 {elapsed*1000:.0f}ms 걸립니다"
+
+
+# --------------------------- 플레이어 옆 칸의 칩 (실측 회귀: 칩이 걸음수보다 중요)
+def _goal_cells(img, **kw):
+    g = board.detect_board(img)
+    sc = recognize.analyze(img, g, recognize.load_templates(),
+                           orange_goal_without_template=True, **kw)
+    return {(d.row, d.col) for d in sc.goals}
+
+
+# 위(0,1) 방향은 뺐다. 합성 화면은 플레이어의 머리/날개를 위 칸에 **덮어 그리므로**
+# 칩 픽셀이 이미지에서 사라진다(실측: 주황 비율 0.3555 가 스프라이트 덩어리에 흡수).
+# 그건 인식이 틀린 게 아니라 그림에 정말 없는 것이다. 실제 게임에서 머리에 일부
+# 가려지는 경우는 goal 템플릿(칩 중심)이 받아낸다.
+@pytest.mark.parametrize("layout,want", [
+    (["....." , ".PG..", ".....", ".....", "....."], (1, 2)),   # 오른쪽
+    (["....." , "GP...", ".....", ".....", "....."], (1, 0)),   # 왼쪽
+    (["....." , ".P...", ".G...", ".....", "....."], (2, 1)),   # 아래
+])
+def test_플레이어_바로_옆의_칩도_찾는다(layout, want):
+    """실측 회귀: 플레이어 스프라이트가 175x141px 인데 셀은 108x88px 이라,
+    상하좌우 이웃 칸이 30~36% 가려진다. 예전에는 '상자와 25% 이상 겹치는 칸'을
+    통째로 검사에서 빼서 **바로 옆 칸의 칩을 못 봤다.**
+
+    지금은 스프라이트가 차지한 픽셀만 마스크에서 빼므로, 디지몬의 주황 갈기는
+    걸러지면서 옆 칸의 칩은 그대로 보인다.
+    """
+    assert want in _goal_cells(synth.make_board(layout))
+
+
+def test_플레이어_갈기를_칩으로_세지_않는다():
+    """반대 방향 회귀. 픽셀만 빼도 플레이어 몸은 여전히 걸러져야 한다."""
+    img = synth.make_board(["....." , ".P...", ".....", ".....", "....."])
+    assert _goal_cells(img) == set(), "플레이어만 있는 판에서 칩을 찾았습니다"
+
+
+def test_스프라이트_마스크를_못_만들면_예전_방식으로_돌아간다():
+    """색 기반 덩어리를 못 찾은 경우에도 오탐이 늘면 안 된다."""
+    img = synth.make_board(["....." , ".P...", ".....", ".....", "....."])
+    g = board.detect_board(img)
+    tpl = recognize.load_templates()
+    hsv = recognize.hsv_of(img)
+    det = recognize.detect_player(img, g, tpl, [], hsv)
+    assert det is not None and det.sprite is not None, "마스크가 만들어져야 정상"
+    # 마스크를 지운 상태로도 분석이 터지지 않아야 한다
+    det.sprite = None
+    # numpy 불리언이 돌아오므로 `is True` 로 비교하면 안 된다.
+    assert bool(recognize._overlaps_player(g.cell_rect(1, 1), det))
