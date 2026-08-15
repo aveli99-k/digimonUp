@@ -380,35 +380,120 @@ def _anchor_cell(grid: Grid, bbox: tuple[int, int, int, int],
     return grid.clamp_locate((x0 + x1) / 2, y1 - grid.cell_h * FOOT_LIFT)
 
 
-def _player_from_highlights(highlights: list[tuple[int, int]]) -> tuple[int, int] | None:
-    """이동 가능 강조칸(십자 모양)의 공통 이웃 = 플레이어 칸.
 
-    게임이 플레이어의 상하좌우를 밝게 표시해 주므로, 강조칸이 2개 이상이면
-    플레이어 위치를 좁힐 수 있다.
+# 움직임으로 플레이어 찾기 기준 (실측: 진짜 디지몬 칸 0.296, 나머지 전부 0.000)
+MOTION_PIXEL_DIFF = 25       # 이만큼 밝기가 바뀐 픽셀을 '움직였다'고 본다
+MOTION_CELL_MIN = 0.05       # 칸에서 움직인 픽셀 비율이 이 이상이어야 후보
+MOTION_MAX_CELLS = 6         # 이보다 많은 칸이 움직였으면 판 전체가 움직이는 중
 
-    다만 **강조칸 전부가 후보의 상하좌우여야 한다.** 이 조건이 없으면 십자가
-    아닌 엉뚱한 밝은 칸 조합에서도 답을 하나 만들어 내 버린다.
-    (실측: 강조칸이 [(0,0),(1,0),(1,1)] 로 잡혔는데 (1,0)은 (0,1)의 대각선인데도
-     (0,1)을 플레이어로 반환해, 템플릿이 맞게 찾은 (2,1)을 덮어썼다.)
+
+def motion_player_cell(frames: list[np.ndarray], grid: Grid
+                       ) -> tuple[tuple[int, int], float] | None:
+    """연속 프레임에서 **움직인 칸**을 찾아 플레이어 칸을 돌려준다.
+
+    이것이 플레이어를 찾는 가장 확실한 방법이다. 디지몬은 가만히 서 있을 때도
+    제자리 애니메이션이 돌아가는 **판 위의 유일한 움직이는 물체**라서, 생김새와
+    아무 상관이 없다. 색·모양·템플릿은 디지몬을 바꾸면 전부 무너진다.
+
+    실측(파란 디지몬, 프레임 7장 0.18초 간격)
+        (4,1) 0.296   <- 진짜 디지몬
+        (3,1) 0.105   <- 머리가 위 칸으로 삐져나온 부분
+        나머지 21칸 전부 0.000
+
+    반환: ((행, 열), 움직임 비율) — 판이 통째로 움직이는 중이면 None.
+    """
+    if len(frames) < 2 or grid is None:
+        return None
+    grays = [cv2.cvtColor(f, cv2.COLOR_BGR2GRAY) for f in frames]
+    acc = None
+    for a, b in zip(grays, grays[1:]):
+        d = cv2.absdiff(a, b)
+        acc = d if acc is None else np.maximum(acc, d)
+    moved = (acc > MOTION_PIXEL_DIFF)
+
+    ratios: dict[tuple[int, int], float] = {}
+    for r in range(N):
+        for c in range(N):
+            x0, y0, x1, y1 = grid.cell_rect(r, c)
+            ratios[(r, c)] = float(moved[y0:y1, x0:x1].mean())
+
+    busy = [rc for rc, v in ratios.items() if v >= MOTION_CELL_MIN]
+    if not busy:
+        return None
+    if len(busy) > MOTION_MAX_CELLS:
+        # 판이 스크롤하거나 화면이 통째로 바뀌는 중이다. 이때는 못 믿는다.
+        return None
+
+    # 머리는 위 칸으로, 발은 아래 칸으로 조금씩 삐져나오지만 **몸통이 있는 칸이
+    # 언제나 가장 많이 움직인다.** 실측에서 몸통 0.296 대 머리 0.105 로 세 배
+    # 차이가 났다. 그래서 위아래로 더 보정하지 않고 최댓값 칸을 그대로 쓴다.
+    cell, best = max(ratios.items(), key=lambda kv: kv[1])
+    return cell, best
+
+
+def _highlight_center(
+    highlights: list[tuple[int, int]],
+    cells: list[list[Kind]] | None = None,
+) -> tuple[tuple[int, int], bool] | None:
+    """강조 영역의 중심 = 플레이어 칸. (중심칸, 확실한가) 를 돌려준다.
+
+    게임은 지금 갈 수 있는 칸을 밝게 칠하는데, 실측해 보니 두 가지가
+    예전 가정과 달랐다.
+
+      1. **플레이어 칸 자신도 강조된다.**
+      2. **강조칸은 4개 고정이 아니다.** 이동 거리가 늘면 마름모로 넓어진다.
+
+    그래서 '십자의 빈 중심'을 찾으면 안 된다. 대신 칸마다 **거기 서 있었다면
+    어디가 칠해졌을지**를 만들어 실제 강조칸과 얼마나 겹치는지로 겨룬다.
+    판 밖과 장애물로는 못 가므로 그 둘을 빼고 예측한다. 그래야 벽이나 장애물에
+    막혀 팔이 둘뿐인 자리도 제대로 맞힌다.
+
+    실측 예 (실제 화면에서 그대로 가져옴)
+        [(3,1),(4,0),(4,2)]                     -> (4,1)  중심칸은 안 칠해짐
+        [(1,1),(2,0),(2,1),(2,2),(3,1)]         -> (2,1)
+        [(1,0),(1,1),(2,0),(2,1),(2,2),(3,1)]   -> (2,1)  (1,0) 하나가 더 붙음
+        [(4,0),(4,1),(4,2)] + (3,1)이 장애물    -> (4,1)  겹침 3/3 으로 완벽
+
+    이 값은 디지몬 생김새와 무관하다. 실측: 파란 디지몬으로 바꾸니 파란 배경에
+    묻혀 색덩어리가 화면 반대쪽 분홍 생물체 (4,4) 를 잡았는데, 강조칸은 그때도
+    (2,1) 을 정확히 가리켰다.
     """
     if len(highlights) < 2:
         return None
     hl = set(highlights)
-    counts: dict[tuple[int, int], int] = {}
-    for r, c in highlights:
-        for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-            nr, nc = r + dr, c + dc
-            if 0 <= nr < N and 0 <= nc < N and (nr, nc) not in hl:
-                counts[(nr, nc)] = counts.get((nr, nc), 0) + 1
-    if not counts:
+    scored = []
+    for r in range(N):
+        for c in range(N):
+            if cells is not None and cells[r][c] == Kind.OBSTACLE:
+                continue
+            # 이 칸에 플레이어가 있다면 강조됐어야 할 칸들.
+            pred = {(r, c)}
+            for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nr, nc = r + dr, c + dc
+                if not (0 <= nr < N and 0 <= nc < N):
+                    continue            # 판 밖으로는 못 간다
+                if cells is not None and cells[nr][nc] == Kind.OBSTACLE:
+                    continue            # 장애물로는 못 간다
+                pred.add((nr, nc))
+            if len(pred) < 2:
+                continue
+            score = len(pred & hl) / len(pred | hl)
+            scored.append((-score, (r, c)))
+    if not scored:
         return None
-    best, n = max(counts.items(), key=lambda kv: kv[1])
-    if n < 2:
-        return None
-    # 십자 검증: 강조칸이 모두 best 의 상하좌우인가?
-    if any(abs(r - best[0]) + abs(c - best[1]) != 1 for r, c in highlights):
-        return None
-    return best
+    scored.sort()
+    if len(scored) > 1 and scored[0][0] == scored[1][0]:
+        return None                      # 똑같이 그럴듯하면 쓰지 않는다
+    best, center = -scored[0][0], scored[0][1]
+    return center, best >= HIGHLIGHT_SURE_MIN
+
+
+def _player_from_highlights(highlights: list[tuple[int, int]],
+                            cells: list[list[Kind]] | None = None
+                            ) -> tuple[int, int] | None:
+    """강조 영역에서 역산한 플레이어 칸. 자세한 근거는 _highlight_center 참고."""
+    got = _highlight_center(highlights, cells)
+    return None if got is None else got[0]
 
 
 def _player_blob(img: np.ndarray, grid: Grid, hsv: np.ndarray | None = None,
@@ -487,7 +572,8 @@ def _player_blob(img: np.ndarray, grid: Grid, hsv: np.ndarray | None = None,
 
 def track_player_fast(img: np.ndarray, grid: Grid,
                       highlights: list[tuple[int, int]],
-                      hsv: np.ndarray | None = None) -> tuple[int, int] | None:
+                      hsv: np.ndarray | None = None,
+                      exclude: set | None = None) -> tuple[int, int] | None:
     """템플릿 매칭 없이 플레이어 칸만 빠르게 추적한다.
 
     한 칸 이동이 끝났는지 확인하려고 짧은 주기로 계속 호출하는 자리라서 속도가
@@ -500,7 +586,10 @@ def track_player_fast(img: np.ndarray, grid: Grid,
     hint = _player_from_highlights(highlights)
     if hint and len(highlights) >= 3:
         return hint
-    blob = _player_blob(img, grid, hsv)
+    # 전체 인식에서 알아낸 '플레이어가 아닌 칸'(장애물/칩/아이템)을 그대로 뺀다.
+    # 이걸 안 빼면 이동 확인 중에 장애물 덩어리를 플레이어로 잡아, 실제로는
+    # 움직였는데도 확인이 계속 실패한다(실측: 이동 1회 / 실패 9회).
+    blob = _player_blob(img, grid, hsv, exclude)
     if blob:
         return _anchor_cell(grid, blob[0], blob[2])
     return hint
@@ -509,7 +598,9 @@ def track_player_fast(img: np.ndarray, grid: Grid,
 def detect_player(img: np.ndarray, grid: Grid, tpl: dict[str, TemplateSet],
                   highlights: list[tuple[int, int]],
                   hsv: np.ndarray | None = None,
-                  exclude: set | None = None) -> Detection | None:
+                  exclude: set | None = None,
+                  cells: list[list[Kind]] | None = None,
+                  motion_cell: tuple[int, int] | None = None) -> Detection | None:
     """플레이어를 찾는다.
 
     순서:
@@ -564,26 +655,54 @@ def detect_player(img: np.ndarray, grid: Grid, tpl: dict[str, TemplateSet],
     # 크기를 셀 높이에 맞춰 정규화하는 과정에서 몇 px 씩 어긋나기 때문에
     # 그 상자의 아래끝을 그대로 발 위치로 쓰면 셀이 한 칸 밀릴 수 있다.
     # (실측: 템플릿 상자가 8px 아래로 잡혀 (1,1) 이 (2,1) 로 뒤집혔다.)
-    if blob is not None and bbox is not None and note.startswith(("전체", "몸통")):
+    if blob is not None and bbox is not None and note.startswith("몸통"):
         note += " (위치는 실루엣 기준)"
 
-    hint = _player_from_highlights(highlights)
+    got = _highlight_center(highlights, cells)
+    hint, hint_sure = got if got else (None, False)
+
+    # **움직임이 잡혔으면 그게 답이다.** motion_player_cell 참고.
+    # 생김새에 전혀 기대지 않는 유일한 신호라, 다른 모든 근거보다 우선한다.
+    if motion_cell is not None:
+        return Detection(Kind.PLAYER, motion_cell[0], motion_cell[1], 0.95, bbox,
+                         note=("움직임으로 확인"
+                               + ("" if hint in (None, motion_cell)
+                                  else f" (강조칸 역산은 {hint})")),
+                         sprite=blob[3] if blob else None)
 
     if bbox is None:
         if hint:
             return Detection(Kind.PLAYER, hint[0], hint[1], 0.5,
-                             note="이동가능칸 십자에서 역산")
+                             note="강조 영역 중심에서 역산")
         return None
 
-    row, col = _anchor_cell(grid, bbox, blob[2] if blob else None)
+    # 위치 기준: 템플릿이 확실히 맞았으면 **템플릿 상자**를, 아니면 실루엣 중심을 쓴다.
+    #
+    # 예전에는 항상 실루엣 중심을 썼다. 템플릿을 셀 높이에 맞춰 정규화하느라
+    # 상자가 몇 px 씩 어긋났기 때문이다. 그 정규화를 없앤 지금은 템플릿 상자가
+    # 더 정확하다.
+    #
+    # 반대로 실루엣은 옆에 붙은 것을 함께 삼킨다. 실측: 디지몬 오른쪽에 게임이
+    # 그리는 노란 방향 표시가 덩어리에 붙어 무게중심이 한 칸 오른쪽으로 밀렸다.
+    # 그러면 두 칸 떨어진 칸을 클릭해 '이동할 수 없습니다'가 뜬다.
+    use_centroid = blob[2] if (blob and not note.startswith("전체 템플릿")) else None
+    row, col = _anchor_cell(grid, bbox, use_centroid)
     if hint == (row, col):
         conf = min(1.0, conf + 0.15)
         note += " + 강조칸 일치"
     elif hint:
-        # 이미지에서 실제로 찾은 위치가 우선이다. 강조칸 역산은 어디까지나 보조라서,
-        # 이걸로 이미지 결과를 덮으면 멀쩡히 맞은 위치를 틀리게 만든다(실측).
-        note += f" (강조칸 역산은 {hint} 였지만 이미지 결과를 따름)"
-        conf = max(0.0, conf - 0.05)
+        # **둘이 다르면 강조칸이 이긴다.**
+        #
+        # 강조칸은 게임이 직접 그린 것이라 디지몬 생김새와 무관하다. 반면
+        # 이미지 인식은 디지몬을 바꾸면 바로 무너진다. 실측한 불일치 사례에서는
+        # 예외 없이 강조칸이 옳았다.
+        #     디지몬 교체 후 몸통 조각이 반대쪽 끝 (2,4) 에 붙음 -> 강조칸 (2,1) 정답
+        #     파란 디지몬이 파란 배경에 묻혀 (4,4) 분홍 생물체를 잡음 -> (2,1) 정답
+        #     (3,1) 이 장애물이라 강조가 셋뿐인데 (4,2) 로 읽음 -> (4,1) 정답
+        # 이미지 쪽을 따르면 몇 칸 떨어진 곳을 클릭해 이동이 전부 실패한다.
+        note += f" -> 강조칸 역산 {hint} 로 교정 (이미지는 {(row, col)})"
+        row, col = hint
+        conf = max(conf, 0.75 if hint_sure else 0.65)
 
     return Detection(Kind.PLAYER, row, col, float(conf), bbox, note,
                      sprite=blob[3] if blob else None)
@@ -599,6 +718,11 @@ OBSTACLE_FRAC = 0.32
 OBSTACLE_FRAC_WEAK = 0.18     # 가려졌을 때를 위한 완화 기준
 ITEM_WARM_FRAC = 0.10
 ITEM_TEMPLATE_MIN = 0.78
+# 칩/아이템 칸에 주황이 최소 이만큼은 있어야 한다.
+# 실측: 진짜 칩 0.099 / 칩 없는 칸 0.000~0.020.
+CARD_ORANGE_MIN = 0.04
+# 강조칸 역산을 '확실하다'고 볼 겹침 비율. 실측: 맞는 칸 0.75~1.00.
+HIGHLIGHT_SURE_MIN = 0.6
 
 
 def item_kind_of(label: str) -> str:
@@ -636,14 +760,34 @@ def _overlaps_player(rect, player: Detection | None, ratio: float = 0.25) -> boo
     return (ix * iy) / area >= ratio
 
 
-def _match_cells(img: np.ndarray, grid: Grid, cells, tpl: dict[str, TemplateSet]):
+def _card_orange_ratio(cell_hsv: np.ndarray) -> float:
+    """칸 안에서 '주황 카드' 색이 차지하는 비율.
+
+    실측(진짜 칩 0.099 / 칩 없는 칸 0.000~0.020)으로 정한 좁은 범위다.
+    """
+    h, s, v = cell_hsv[:, :, 0], cell_hsv[:, :, 1], cell_hsv[:, :, 2]
+    return float(((h >= 5) & (h <= 30) & (s > 150) & (v > 150)).mean())
+
+
+def _match_cells(img: np.ndarray, grid: Grid, cells, tpl: dict[str, TemplateSet],
+                 hsv: np.ndarray | None = None):
     """칸마다 칩/아이템 템플릿을 맞춰 본 결과를 한 번에 구한다.
 
     반환: {"goal": {(r,c): (점수, 라벨)}, "item": {...}}
 
     플레이어를 찾기 **전에** 불러야 한다. 플레이어 찾기는 '가장 큰 덩어리' 라는
     헐거운 기준이라, 칩/아이템 칸을 미리 알아야 그걸 플레이어로 오인하지 않는다.
+
+    주황칩은 정의상 주황색이므로, 템플릿 점수만 믿지 않고 **그 칸에 주황이
+    실제로 있는지** 한 번 더 확인한다. 템플릿은 모양만 보기 때문에 밝은 빈칸이나
+    노란 방향 표시에서도 기준을 넘길 때가 있다.
+    (실측: 칩이 (2,3) 하나뿐인 판에서 (1,2),(2,0),(3,0) 이 칩으로 잡혀 왼쪽으로
+     헛걸음했다. 주황 비율은 진짜 칩 0.098, 빈칸 0.000~0.020 으로 확실히 갈린다.)
+
+    아이템에는 걸지 않는다. 아이템은 색이 제각각이다(부수기 노랑, 돌진 초록).
     """
+    if hsv is None:
+        hsv = hsv_of(img)
     out = {"goal": {}, "item": {}}
     for key, tset, scales, thr in (
             ("goal", tpl["goal"], GOAL_SCALES, GOAL_TEMPLATE_MIN),
@@ -656,13 +800,20 @@ def _match_cells(img: np.ndarray, grid: Grid, cells, tpl: dict[str, TemplateSet]
                     continue
                 x0, y0, x1, y1 = grid.cell_rect(r, c)
                 score, _, label = match_best(img[y0:y1, x0:x1], tset, scales=scales)
-                if score >= thr:
-                    out[key][(r, c)] = (score, label)
+                if score < thr:
+                    continue
+                # 주황 확인은 **칩에만** 건다. 아이템은 색이 제각각이라
+                # (부수기 노랑, 돌진 초록) 주황을 요구하면 놓친다.
+                if (key == "goal"
+                        and _card_orange_ratio(hsv[y0:y1, x0:x1]) < CARD_ORANGE_MIN):
+                    continue
+                out[key][(r, c)] = (score, label)
     return out
 
 
 def analyze(img: np.ndarray, grid: Grid, tpl: dict[str, TemplateSet],
-            orange_goal_without_template: bool = False) -> Scene:
+            orange_goal_without_template: bool = False,
+            motion_cell: tuple[int, int] | None = None) -> Scene:
     """한 프레임을 통째로 인식해서 Scene 을 만든다.
 
     orange_goal_without_template
@@ -691,37 +842,7 @@ def analyze(img: np.ndarray, grid: Grid, tpl: dict[str, TemplateSet],
                 highlights.append((r, c))
             ofrac[r][c] = _frac(m_obst, rect)
 
-    # --- 1) 칩/아이템을 템플릿으로 먼저 확정한다 --------------------------
-    # 순서가 중요하다. 예전에는 플레이어를 먼저 찾았는데, 플레이어 찾기는
-    # '게임판 색이 아닌 가장 큰 덩어리' 라는 헐거운 기준이라 **칩이나 아이템을
-    # 플레이어로 잘못 잡을 수 있다.**
-    #
-    # 실측 회귀: 디지몬을 작은 것으로 바꿨더니 스프라이트 면적비가 0.13 이 됐다.
-    # 주황칩은 0.48 이라 크기로 겨루면 칩이 이긴다. 그래서 칩을 플레이어로 잡고
-    # 진짜 플레이어를 놓쳤고, 그 뒤의 모든 이동이 엉뚱한 방향이었다.
-    #
-    # 칩/아이템은 템플릿으로 확실히 아는 것이므로 먼저 확정하고, 그 칸은
-    # 플레이어 후보에서 뺀다.
-    strong = _match_cells(img, grid, cells, tpl)
-    player = detect_player(img, grid, tpl, highlights, hsv,
-                           exclude=set(strong["goal"]) | set(strong["item"]))
-    if player is None:
-        notes.append("플레이어를 찾지 못했습니다.")
-
-    # 플레이어 스프라이트가 차지한 **픽셀만** 마스크에서 지운다.
-    #
-    # 예전에는 '플레이어 상자와 25% 이상 겹치는 칸'을 통째로 검사에서 뺐다.
-    # 그런데 실측하면 스프라이트가 175x141px 이고 셀은 108x88px 이라, 상하좌우
-    # 이웃 칸이 30~36% 씩 가려진다. 즉 **플레이어 바로 옆 칸의 칩을 못 봤다.**
-    # 칩이 걸음수보다 중요하므로 이건 그냥 손해다.
-    #
-    # 픽셀 단위로 빼면 디지몬의 주황 갈기는 그대로 걸러지면서 옆 칸의 칩은 보인다.
-    if player is not None and player.sprite is not None:
-        keep = 1 - player.sprite
-        m_orange = m_orange * keep
-        m_warm = m_warm * keep
-
-    # --- 2) 장애물 -------------------------------------------------------
+    # --- 1) 장애물 먼저 -------------------------------------------------------
     # 템플릿 매칭은 **색만으로 판정이 안 갈리는 칸에서만** 돌린다. 색 비율이
     # 이미 기준을 넘었으면 템플릿 점수가 얼마든 결과는 장애물이므로, 25칸을
     # 전부 훑을 이유가 없다(실측: analyze 한 번에 matchTemplate 283회 중 200회가
@@ -755,6 +876,47 @@ def analyze(img: np.ndarray, grid: Grid, tpl: dict[str, TemplateSet],
     # 템플릿은 **칩의 중심(번개 무늬)** 이어야 한다. 카드 전체를 쓰면 맨 아래 행에서
     # 게임판 하단 테두리에 카드 아래쪽이 가려질 때 점수가 무너진다. 중심만 쓰면
     # 가려져도 그대로 맞는다(실측: 셀 아래 38px 가 잘려도 무사).
+
+    # --- 2) 칩/아이템을 템플릿으로 확정한다 --------------------------
+    # 순서가 중요하다. 예전에는 플레이어를 먼저 찾았는데, 플레이어 찾기는
+    # '게임판 색이 아닌 가장 큰 덩어리' 라는 헐거운 기준이라 **칩이나 아이템을
+    # 플레이어로 잘못 잡을 수 있다.**
+    #
+    # 실측 회귀: 디지몬을 작은 것으로 바꿨더니 스프라이트 면적비가 0.13 이 됐다.
+    # 주황칩은 0.48 이라 크기로 겨루면 칩이 이긴다. 그래서 칩을 플레이어로 잡고
+    # 진짜 플레이어를 놓쳤고, 그 뒤의 모든 이동이 엉뚱한 방향이었다.
+    #
+    # 칩/아이템은 템플릿으로 확실히 아는 것이므로 먼저 확정하고, 그 칸은
+    # 플레이어 후보에서 뺀다.
+    #
+    # **장애물 판정보다 뒤에 와야 한다.** 장애물 칸에까지 칩 템플릿을 맞추면
+    # 연보라 피라미드가 칩으로 잡힌다(실측: 한 프레임에 유령 칩 4개, 그 바람에
+    # 못 가는 칸을 클릭해 '이동할 수 없습니다'가 75초에 16번 떴다).
+    strong = _match_cells(img, grid, cells, tpl, hsv)
+    # 장애물 칸도 뺀다. 실측: 게임판 오른쪽 아래 피라미드가 면적비 0.43 으로 잡혀
+    # 작은 디지몬(0.13)을 제치고 플레이어가 됐다. 그러면 디지몬과 상관없는
+    # 칸을 계속 클릭해서 '이동할 수 없습니다'만 뜬다(75초에 15번, 이동 0회).
+    occupied = (set(strong["goal"]) | set(strong["item"])
+                | {(r, c) for r in range(N) for c in range(N)
+                   if cells[r][c] == Kind.OBSTACLE})
+    player = detect_player(img, grid, tpl, highlights, hsv, exclude=occupied,
+                           cells=cells, motion_cell=motion_cell)
+    if player is None:
+        notes.append("플레이어를 찾지 못했습니다.")
+
+    # 플레이어 스프라이트가 차지한 **픽셀만** 마스크에서 지운다.
+    #
+    # 예전에는 '플레이어 상자와 25% 이상 겹치는 칸'을 통째로 검사에서 뺐다.
+    # 그런데 실측하면 스프라이트가 175x141px 이고 셀은 108x88px 이라, 상하좌우
+    # 이웃 칸이 30~36% 씩 가려진다. 즉 **플레이어 바로 옆 칸의 칩을 못 봤다.**
+    # 칩이 걸음수보다 중요하므로 이건 그냥 손해다.
+    #
+    # 픽셀 단위로 빼면 디지몬의 주황 갈기는 그대로 걸러지면서 옆 칸의 칩은 보인다.
+    if player is not None and player.sprite is not None:
+        keep = 1 - player.sprite
+        m_orange = m_orange * keep
+        m_warm = m_warm * keep
+
     # 칩보다 **아이템 템플릿을 먼저** 본다.
     #
     # 실측 회귀: 판 위의 부수기 아이템(노란 발톱)이 주황칩으로 잡혔다(색 비율

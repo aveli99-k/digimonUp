@@ -13,6 +13,7 @@ import pytest
 import board
 import recognize
 import synth
+from board import N
 from recognize import Kind
 
 LAYOUT = ["....." , ".P..X", "..X..", "....X", "....."]
@@ -177,22 +178,47 @@ def test_플레이어의_머리와_발이_걸친_칸을_아이템으로_세지_�
     assert sc.cells[2][1] != Kind.ITEM
 
 
-# --------------------------------------- 강조칸 역산은 어디까지나 보조
-def test_강조칸이_십자가_아니면_역산하지_않는다():
-    """실측 회귀: 강조칸이 [(0,0),(1,0),(1,1)] 로 잡힌 적이 있다.
+# --------------------------------------- 강조 영역에서 플레이어 칸 역산
+def test_강조칸에서_플레이어_칸을_역산한다():
+    """실측 화면에서 그대로 가져온 값."""
+    # 중심칸은 안 칠해지고 팔만 셋 (아래는 판 밖)
+    assert recognize._highlight_center([(3, 1), (4, 0), (4, 2)]) == ((4, 1), True)
+    # 플레이어 칸 자신도 칠해진 경우
+    assert recognize._highlight_center(
+        [(1, 1), (2, 0), (2, 1), (2, 2), (3, 1)]) == ((2, 1), True)
 
-    이 셋은 한 칸을 둘러싼 십자가 될 수 없는데도(예: (1,0)은 (0,1)의 대각선)
-    예전 코드는 (0,1)을 플레이어로 반환했고, 템플릿이 맞게 찾은 (2,1)을
-    그 값으로 덮어써 이동 확인이 계속 실패했다.
+
+def test_강조_영역이_넓어져도_플레이어_칸은_찾는다():
+    """강조칸은 4개 고정이 아니다. 실측: (1,0) 이 하나 더 붙어 있었다.
+
+    이때 파란 디지몬이 파란 배경에 묻혀 색덩어리는 화면 반대쪽 (4,4) 의 분홍
+    생물체를 플레이어로 잡았다. 강조칸만이 (2,1) 을 맞게 가리켰다.
     """
-    assert recognize._player_from_highlights([(0, 0), (1, 0), (1, 1)]) is None
+    assert recognize._highlight_center(
+        [(1, 0), (1, 1), (2, 0), (2, 1), (2, 2), (3, 1)]) == ((2, 1), True)
 
 
-def test_제대로_된_십자는_역산한다():
-    assert recognize._player_from_highlights([(0, 1), (1, 0), (1, 2), (2, 1)]) == (1, 1)
-    assert recognize._player_from_highlights([(1, 0), (1, 2)]) == (1, 1)
-    # 위와 오른쪽만 보이는 부분 십자도 유효하다
-    assert recognize._player_from_highlights([(0, 0), (1, 1)]) == (1, 0)
+def test_장애물에_막혀_강조칸이_적어도_찾는다():
+    """실측 회귀: 강조칸 (4,0),(4,1),(4,2) 에 (3,1) 은 장애물이었다.
+
+    아래는 판 밖, 위는 장애물이라 갈 수 있는 곳이 좌우뿐이다. '팔 3개 이상'을
+    요구하던 때는 이걸 흐릿하다고 보고 이미지 결과 (4,2) 를 따라갔고, 클릭이
+    전부 실패해 36사이클 동안 두 번밖에 못 움직였다.
+    """
+    cells = [[Kind.EMPTY] * N for _ in range(N)]
+    cells[3][1] = Kind.OBSTACLE
+    assert recognize._highlight_center(
+        [(4, 0), (4, 1), (4, 2)], cells) == ((4, 1), True)
+
+
+def test_팔이_둘뿐이면_확실하다고_보지_않는다():
+    got = recognize._highlight_center([(1, 0), (1, 2)])
+    assert got == ((1, 1), False)            # 위치는 맞지만 이미지 결과를 못 덮는다
+
+
+def test_한_칸으로_안_좁혀지면_역산하지_않는다():
+    # (1,0) 과 (0,1) 이 똑같이 그럴듯해서 하나로 못 정한다
+    assert recognize._highlight_center([(0, 0), (1, 1)]) is None
 
 
 def test_강조칸이_하나뿐이면_역산하지_않는다():

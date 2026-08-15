@@ -37,7 +37,8 @@ from emulator_window import (EmulatorWindow, capture_client,
 from pathfind import PlanKind, plan_route
 from recognize import (Kind, Scene, TemplateSet, analyze, find_blocked_toast,
                        find_green_button, find_top_tab, hsv_of, load_templates,
-                       mask_highlight, mask_obstacle, track_player_fast, _frac)
+                       mask_highlight, mask_obstacle, motion_player_cell,
+                       track_player_fast, _frac)
 
 from paths import DEBUG_DIR
 
@@ -69,6 +70,13 @@ class ExploreConfig:
     move_duration: float = 0.05        # 마우스 이동 시간
 
     # 사이클
+    # 움직임으로 플레이어 찾기
+    # 디지몬은 서 있을 때도 제자리 애니메이션이 도는 판 위의 유일한 움직이는
+    # 물체다. 색·모양·템플릿과 달리 디지몬을 바꿔도 그대로 통한다.
+    # 실측: 3장 x 0.18초면 진짜 칸 0.296 / 나머지 24칸 0.000 으로 확실히 갈렸다.
+    motion_frames: int = 3
+    motion_gap_sec: float = 0.18
+
     cycle_pause_sec: float = 0.25      # 전체 재인식 사이의 쉬는 시간
     lost_retry_sec: float = 0.8        # 인식 실패 시 재시도 간격
     max_lost_before_report: int = 5
@@ -162,6 +170,9 @@ class ExploreEngine:
         # 왼쪽 아래 아이템 개수. 못 읽으면 항목이 None 이다.
         self.counts = counters.Counters()
         self._last_counts_line = ""
+        # 마지막 전체 인식에서 알아낸 '플레이어가 아닌 칸'(장애물/칩/아이템).
+        # 이동 확인 중 빠른 추적이 그것들을 플레이어로 잡지 않도록 넘겨준다.
+        self._not_player: set = set()
 
     # ---------------------------------------------------------------- 정지
     def stop(self) -> None:
@@ -388,6 +399,25 @@ class ExploreEngine:
         self.locked_grid = chosen
         return chosen
 
+    # ------------------------------------------------- 움직임으로 플레이어 찾기
+    def _motion_cell(self, img: np.ndarray, grid: Grid) -> tuple[int, int] | None:
+        """짧은 간격으로 몇 장 더 찍어 움직인 칸을 찾는다.
+
+        자세한 근거는 recognize.motion_player_cell 참고. 판이 스크롤하는 중이면
+        온 화면이 움직이므로 그쪽에서 None 을 돌려주고, 그때는 기존 방식으로
+        되돌아간다.
+        """
+        frames = [img]
+        for _ in range(self.cfg.motion_frames - 1):
+            self._check_stop()
+            time.sleep(self.cfg.motion_gap_sec)
+            shot = self._capture()
+            if shot is None:
+                return None
+            frames.append(shot)
+        got = motion_player_cell(frames, grid)
+        return None if got is None else got[0]
+
     # ------------------------------------------------- 아이템 개수 모니터링
     def _update_counts(self, img: np.ndarray) -> None:
         """왼쪽 아래 걸음수/부수기/돌진 개수를 읽어 둔다.
@@ -474,7 +504,7 @@ class ExploreEngine:
             for c in range(N):
                 if _frac(m_high, grid.cell_rect(r, c)) > 0.40:
                     highlights.append((r, c))
-        return track_player_fast(img, grid, highlights, hsv)
+        return track_player_fast(img, grid, highlights, hsv, self._not_player)
 
     @staticmethod
     def _cell_signature(img: np.ndarray, grid: Grid) -> tuple[np.ndarray, np.ndarray]:
@@ -710,8 +740,20 @@ class ExploreEngine:
                     self._sleep(self.cfg.lost_retry_sec)
                     continue
 
+                # 플레이어는 **움직임**으로 찾는 것이 가장 확실하다. 짧은 간격으로
+                # 몇 장 더 찍어 어느 칸이 움직였는지 본다. 디지몬은 서 있을 때도
+                # 제자리 애니메이션이 돌아가는 판 위의 유일한 움직이는 물체다.
+                motion = self._motion_cell(img, grid)
+
                 scene = analyze(img, grid, self.templates,
-                                self.cfg.orange_goal_without_template)
+                                self.cfg.orange_goal_without_template,
+                                motion_cell=motion)
+                # 빠른 추적이 장애물/칩/아이템을 플레이어로 잡지 않게 넘겨준다.
+                self._not_player = (
+                    {(r, c) for r in range(N) for c in range(N)
+                     if scene.cells[r][c] == Kind.OBSTACLE}
+                    | {(d.row, d.col) for d in scene.goals}
+                    | set(scene.item_kinds))
 
                 # --- 2) 전체 경로 계산 --------------------------------
                 plan = plan_route(scene, self.cfg.item_max_detour)
@@ -754,7 +796,16 @@ class ExploreEngine:
                 # 새 지형이 들어왔다면 장애물 배치가 반드시 달라진다.
                 layout = tuple(tuple(c == Kind.OBSTACLE for c in row)
                                for row in scene.cells)
-                if layout == self._last_layout:
+                # 칩이나 아이템을 먹으러 가는 중이라면 '갇힘'으로 세지 않는다.
+                #
+                # 실측 교착: 아래 갇힘 처리는 이동을 건너뛰고 continue 한다.
+                # 그런데 이동을 안 했으니 장애물 배치는 당연히 그대로고, 그래서
+                # 다음 사이클도 갇힘으로 판정돼 또 건너뛴다. 스스로를 강화하는
+                # 교착이다. (실측: 칩 (2,3) 을 향해 UP 을 계획해 놓고 P(4,4) 에서
+                #  27초 동안 11사이클을 한 발짝도 못 갔다.)
+                # 갈 곳이 분명하면 갇힌 게 아니므로 그냥 가면 된다.
+                worth_going = plan.kind in (PlanKind.GOAL, PlanKind.ITEM)
+                if layout == self._last_layout and not worth_going:
                     self.stuck_cycles += 1
                 else:
                     self.stuck_cycles = 0
