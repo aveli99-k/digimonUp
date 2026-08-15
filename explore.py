@@ -54,6 +54,9 @@ class ExploreConfig:
     # 일부를 적어 두면 그 창만 후보로 본다. 비워 두면 전부 본다.
     window_title_hint: str = ""
     window_min_size: int = 200         # 이보다 작은 창은 앱플레이어일 수 없다
+    # 격자를 처음 고정할 때 모을 최소 표 수. 게임이 다시 그리는 중간에 캡처되면
+    # 격자선이 흐려져 한 칸 밀린 배치가 이긴다. 실측 프레임 모의에서 5장이면 오판 0%.
+    grid_min_votes: int = 5
 
     # 이동
     click_settle_sec: float = 0.12     # 클릭 직후 최소 대기
@@ -266,7 +269,13 @@ class ExploreEngine:
         self.log("[안내] 안내가 오래 남아 있습니다. 전체 재인식으로 넘어갑니다.")
 
     # ------------------------------------------------------- 격자 고정
-    def _stable_grid(self, img: np.ndarray) -> Grid | None:
+    @staticmethod
+    def _grid_key(grid: Grid) -> tuple[int, int, int, int]:
+        """몇 px 흔들리는 것은 같은 배치로 묶기 위한 열쇠."""
+        return (grid.xs[0] // 8, grid.ys[0] // 8,
+                int(grid.cell_w) // 8, int(grid.cell_h) // 8)
+
+    def _stable_grid(self, img: np.ndarray, seed: bool = False) -> Grid | None:
         """최근 프레임들의 **다수결**로 격자를 정한다.
 
         게임판 패널은 화면에서 움직이지 않는다. 스크롤하는 건 판의 내용일 뿐
@@ -288,25 +297,57 @@ class ExploreEngine:
 
         grid = detect_board(img, min_confidence=self.cfg.board_min)
         if grid is not None:
-            # 몇 px 흔들리는 것은 같은 배치로 묶는다.
-            key = (grid.xs[0] // 8, grid.ys[0] // 8,
-                   int(grid.cell_w) // 8, int(grid.cell_h) // 8)
-            self._grid_votes.append((key, grid))
+            self._grid_votes.append((self._grid_key(grid), grid))
+
+        # 아직 고정된 격자가 없으면 **한 장만 보고 정하지 않는다.**
+        # 실측(실제 MuMuPlayer 40프레임): 게임이 다시 그리는 중간에 캡처되면
+        # 격자선이 흐려져서 한 칸 밀린 배치가 이긴다. 40장 중 3장(7.5%)이 그랬다.
+        # 그 한 장이 하필 첫 프레임이면 잘못된 격자로 경로를 짜서 엉뚱한 칸을
+        # 클릭하게 된다. 그래서 처음에는 몇 장을 더 모아 다수결로 정한다.
+        # seed 는 전체 인식(사이클 시작)에서만 켠다. 이동 확인 루프는 폴링마다
+        # 도는 자리라 여기서 캡처를 더 하면 확인 기회가 줄어 손해다.
+        if seed and self.locked_grid is None:
+            need = self.cfg.grid_min_votes - len(self._grid_votes)
+            for _ in range(max(0, need)):
+                self._check_stop()
+                # 연속으로 바로 찍으면 같은 중간 프레임을 또 잡을 수 있어 조금 띄운다.
+                self._sleep(0.05)
+                extra = self._capture()
+                if extra is None or extra.shape[:2] != size:
+                    break
+                g2 = detect_board(extra, min_confidence=self.cfg.board_min)
+                if g2 is not None:
+                    self._grid_votes.append((self._grid_key(g2), g2))
 
         if not self._grid_votes:
             return self.locked_grid
 
+        # 배치마다 '가장 잘 나온 프레임'의 신뢰도로 겨룬다. 표 개수로 뽑지 않는다.
+        #
+        # 실측(실제 MuMuPlayer 60프레임): 게임이 다시 그리는 중간에 캡처된 프레임은
+        # 무리 지어 들어온다(연속 3~4장). 그래서 표를 더 모아도 다수결은 6~7% 에서
+        # 안 떨어졌다. 반면 두 배치의 신뢰도는 아예 겹치지 않았다.
+        #     맞는 배치  0.882 ~ 0.911
+        #     밀린 배치  0.830 ~ 0.853
+        # 그래서 '한 장이라도 잘 나온 쪽'을 믿는 편이 훨씬 정확하다.
+        # 같은 실측 프레임으로 모의해 보면 5장 기준 오판이 6.6% -> 0% 가 된다.
+        best: dict[tuple, float] = {}
         counts = Counter(k for k, _ in self._grid_votes)
-        best_key, votes = counts.most_common(1)[0]
-        chosen = next(g for k, g in reversed(self._grid_votes) if k == best_key)
+        for k, g in self._grid_votes:
+            if g.confidence > best.get(k, 0.0):
+                best[k] = g.confidence
+        best_key = max(best, key=lambda k: (best[k], counts[k]))
+        chosen = max((g for k, g in self._grid_votes if k == best_key),
+                     key=lambda g: g.confidence)
+        votes = counts[best_key]
 
         if self.locked_grid is None:
             self.log(f"[격자] 고정: x={chosen.xs} y={chosen.ys} "
                      f"(신뢰도 {chosen.confidence:.2f}, {votes}/{len(self._grid_votes)}표)")
         elif (chosen.xs[0] // 8, chosen.ys[0] // 8) != (
                 self.locked_grid.xs[0] // 8, self.locked_grid.ys[0] // 8):
-            self.log(f"[격자] 다수결로 갱신: y0 {self.locked_grid.ys[0]} -> "
-                     f"{chosen.ys[0]} ({votes}/{len(self._grid_votes)}표)")
+            self.log(f"[격자] 갱신: y0 {self.locked_grid.ys[0]} -> {chosen.ys[0]} "
+                     f"(신뢰도 {chosen.confidence:.2f}, {votes}/{len(self._grid_votes)}표)")
 
         self.locked_grid = chosen
         return chosen
@@ -565,7 +606,7 @@ class ExploreEngine:
                     self._wait_toast_clear()
                     continue
 
-                grid = self._stable_grid(img)
+                grid = self._stable_grid(img, seed=True)
                 if grid is None:
                     lost += 1
                     if lost == 1 or lost % self.cfg.max_lost_before_report == 0:

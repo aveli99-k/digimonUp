@@ -28,6 +28,7 @@
   "explore": {
     "window_title_hint": "",
     "window_min_size": 200,
+    "grid_min_votes": 5,
     "top_tab_min": 0.6,
     "board_min": 0.45,
     "require_top_tab": true,

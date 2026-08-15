@@ -399,6 +399,61 @@ def test_이동에_성공하면_실패_연속_횟수가_초기화된다():
     assert ok is True
 
 
+# ------------------------------------------------- 격자 위상 (실측 회귀)
+def _grid_at(y0, conf):
+    return board.Grid(xs=[76, 184, 292, 400, 507, 615],
+                      ys=[y0 + 88 * i for i in range(6)],
+                      confidence=conf, detail={})
+
+
+def test_격자는_표_수가_아니라_신뢰도로_고른다(monkeypatch):
+    """실측 회귀: 실제 MuMuPlayer 화면에서 한 칸 밀린 격자가 잡히는 일이 있었다.
+
+    게임이 다시 그리는 중간에 캡처되면 격자선이 흐려져 밀린 배치가 이긴다.
+    이런 프레임은 **무리 지어** 들어오기 때문에(연속 3~4장) 표를 더 모아도
+    다수결로는 못 거른다. 실측 60프레임 모의에서 다수결은 장수를 늘려도
+    6~7% 에서 안 떨어졌다.
+
+    반면 두 배치의 신뢰도는 겹치지 않았다 (맞는 쪽 0.882~0.911,
+    밀린 쪽 0.830~0.853). 그래서 '한 장이라도 잘 나온 쪽'을 믿는다.
+    """
+    eng = _engine([synth.make_board(LAYOUT_AT[(1, 1)])] * 10)
+    # 밀린 배치가 3표, 맞는 배치가 1표. 신뢰도는 맞는 쪽이 높다.
+    seq = [_grid_at(507, 0.84), _grid_at(507, 0.85), _grid_at(507, 0.83),
+           _grid_at(419, 0.91)]
+    it = iter(seq)
+    monkeypatch.setattr(explore, "detect_board",
+                        lambda img, min_confidence=0.0: next(it, seq[-1]))
+    for _ in range(len(seq)):
+        g = eng._stable_grid(eng._capture())
+    assert g.ys[0] == 419, f"표가 많은 밀린 배치를 골랐습니다 (y0={g.ys[0]})"
+
+
+def test_격자를_한_장만_보고_고정하지_않는다(monkeypatch):
+    """시작 직후 첫 프레임이 하필 밀린 프레임이면 잘못된 격자로 클릭하게 된다.
+
+    실측: 40프레임 중 3장(7.5%)이 밀린 배치였다. 그래서 전체 인식 때는
+    몇 장을 더 모아서 정한다.
+    """
+    eng = _engine([synth.make_board(LAYOUT_AT[(1, 1)])] * 10,
+                  grid_min_votes=5)
+    seq = [_grid_at(507, 0.84)] + [_grid_at(419, 0.91)] * 6
+    it = iter(seq)
+    monkeypatch.setattr(explore, "detect_board",
+                        lambda img, min_confidence=0.0: next(it, seq[-1]))
+    g = eng._stable_grid(eng._capture(), seed=True)
+    assert g.ys[0] == 419, "첫 프레임 한 장만 보고 고정했습니다"
+    assert len(eng._grid_votes) >= 5, "표를 더 모으지 않았습니다"
+
+
+def test_이동_확인_루프에서는_추가_캡처를_하지_않는다(monkeypatch):
+    """확인 루프는 폴링마다 도는 자리다. 여기서 캡처를 더 하면 확인 기회가 준다."""
+    eng = _engine([synth.make_board(LAYOUT_AT[(1, 1)])] * 10, grid_min_votes=5)
+    before = eng.window.i
+    eng._stable_grid(eng._capture())          # seed=False (기본값)
+    assert eng.window.i - before == 1, "이동 확인 경로에서 프레임을 더 소비했습니다"
+
+
 # ----------------------------------------- 막힌 주머니에서 제자리 맴돌기 방지
 POCKET = [
     "..X..",
