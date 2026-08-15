@@ -100,10 +100,6 @@ EMULATOR_PROFILES: tuple[EmulatorProfile, ...] = (
 )
 
 # 아래 두 개는 예전 이름이다. 지금은 프로필 표에서 뽑아 쓴다.
-RENDER_CLASSES = tuple(c for p in EMULATOR_PROFILES for c in p.render_classes)
-RENDER_TITLES = tuple(t for p in EMULATOR_PROFILES for t in p.render_titles)
-MANAGER_CHILD_CLASSES = tuple(c for p in EMULATOR_PROFILES
-                              for c in p.exclude_child_classes)
 
 PW_RENDERFULLCONTENT = 0x00000002
 

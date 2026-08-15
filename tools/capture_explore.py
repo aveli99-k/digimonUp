@@ -20,14 +20,12 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-import os
-import sys
 import time
 
 import cv2
 
-from emulator_window import capture_client, enable_dpi_awareness, enumerate_candidates
+from emulator_window import capture_client, enable_dpi_awareness
+from pickwin import pick_window
 
 from paths import EXPLORE_TEMPLATE_DIR as OUT_ROOT
 
@@ -41,21 +39,6 @@ TARGETS = {
     "7": ("blocked_toast", "'해당 위치로 이동할 수 없습니다' 안내문"),
 }
 
-
-def pick_window():
-    cands = enumerate_candidates()
-    if not cands:
-        print("MuMuPlayer 창을 찾지 못했습니다. 에뮬레이터를 먼저 실행하세요.")
-        return None
-    if len(cands) == 1:
-        return cands[0]
-    print("\n여러 창이 있습니다. 번호를 고르세요.")
-    for i, c in enumerate(cands):
-        print(f"  {i}) hwnd=0x{c.hwnd:X} {c.width}x{c.height} '{c.title}'")
-    try:
-        return cands[int(input("번호: ").strip())]
-    except (ValueError, IndexError):
-        return None
 
 
 def main() -> int:

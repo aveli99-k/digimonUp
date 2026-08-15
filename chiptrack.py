@@ -51,13 +51,6 @@ class ChipTracker:
     def locked(self) -> bool:
         return bool(self.chips)
 
-    def due_advances(self, chip: Cell) -> int:
-        """이 칩이 내 자리로 들어오기까지 남은 전진 횟수.
-
-        2열이면 1(이번 전진), 3열이면 2. 1열 이하는 걸어가서 먹는 것이라 0.
-        """
-        return max(0, chip[1] - 1)
-
     # ------------------------------------------------------------- 갱신
     def advanced(self, times: int = 1) -> None:
         """오른쪽으로 times 번 전진했다. 판이 그만큼 왼쪽으로 밀린다."""
@@ -105,9 +98,3 @@ class ChipTracker:
                     self.chips.discard(chip)
                     self._misses.pop(chip, None)
         return set(self.chips)
-
-    def reset(self) -> None:
-        """판을 새로 인식해야 할 때(스크롤 놓침 등) 전부 버린다."""
-        self.chips.clear()
-        self._misses.clear()
-        self._pending = None

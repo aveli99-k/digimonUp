@@ -36,7 +36,7 @@ import cv2
 import numpy as np
 
 from board import Grid, N
-from imgio import imread_bgr
+from imgio import hsv_of, imread_bgr
 from paths import EXPLORE_TEMPLATE_DIR as TEMPLATE_DIR
 
 
@@ -262,11 +262,6 @@ def match_big(scene_img: np.ndarray, tset: TemplateSet, scales=(0.85, 1.0, 1.15)
 # 색 마스크들
 # --------------------------------------------------------------------------
 
-def hsv_of(img: np.ndarray) -> np.ndarray:
-    """BGR -> HSV. 한 프레임에서 마스크를 여러 개 쓸 때 이걸 한 번만 구해 돌려쓴다."""
-    return cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-
-
 def _range_mask(img, hsv, lo, hi) -> np.ndarray:
     """HSV 범위 안이면 1, 아니면 0 인 uint8 마스크.
 
@@ -413,24 +408,6 @@ def motion_report(frames: list[np.ndarray], grid: Grid):
     cell, best = max(ratios.items(), key=lambda kv: kv[1])
     return busy, cell, best, ratios
 
-
-def moving_cells(frames: list[np.ndarray], grid: Grid) -> set[tuple[int, int]]:
-    """지금 **그림이 움직이고 있는** 칸들.
-
-    판이 멈춰 있을 때 움직이는 것은 디지몬과 **연출**뿐이다. 판 위에 놓인
-    칩·아이템·장애물은 가만히 있는다. 그래서 움직이는 칸에서 잡힌 칩은
-    칩 획득 이펙트로 흩어지는 칩이다.
-
-    실측(0.12초 간격 161프레임): 잡힌 칩 자리 15건이 전부 0.72초 안에
-    사라졌고, 15건 모두 움직인 프레임이 있었다.
-
-    주의: 스크롤 중에는 온 화면이 움직이므로 이 값을 쓰면 안 된다.
-    부르는 쪽에서 판이 가라앉은 뒤에 쓴다(_board_animating).
-    """
-    if len(frames) < 2 or grid is None:
-        return set()
-    _, _, _, ratios = motion_report(frames, grid)
-    return {cell for cell, v in ratios.items() if v >= MOTION_CELL_MIN}
 
 
 def motion_player_cell(frames: list[np.ndarray], grid: Grid

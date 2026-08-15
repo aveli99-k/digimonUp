@@ -167,9 +167,16 @@ def test_후보가_하나도_조건을_만족하지_않으면_None(monkeypatch, 
 
 
 def test_관리창은_후보에서_제외되는_규칙이_있다():
-    """멀티 인스턴스 관리창(MuMuNativeWindow 자식)을 거르는 목록이 살아 있는지."""
-    assert "MuMuNativeWindow" in emulator_window.MANAGER_CHILD_CLASSES
-    assert "nemuwin" in emulator_window.RENDER_CLASSES
+    """멀티 인스턴스 관리창(MuMuNativeWindow 자식)을 거르는 목록이 살아 있는지.
+
+    파생 별칭이 아니라 원본인 프로필을 본다. 별칭은 쓰는 곳이 없어 지웠다.
+    """
+    manager = {c for p in emulator_window.EMULATOR_PROFILES
+               for c in p.exclude_child_classes}
+    render = {c for p in emulator_window.EMULATOR_PROFILES
+              for c in p.render_classes}
+    assert "MuMuNativeWindow" in manager
+    assert "nemuwin" in render
 
 
 # ------------------------------------- 여러 앱플레이어 지원 (창 클래스에 의존하지 않기)

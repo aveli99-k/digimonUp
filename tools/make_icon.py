@@ -30,11 +30,8 @@ SIZES = (16, 32, 48, 64, 128, 256)
 
 # 게임 화면에서 실측한 색을 그대로 쓴다 (README 의 HSV 표 참고).
 BG_DARK = (14, 22, 46)
-CELL = (24, 74, 168)
 CELL_LIT = (58, 140, 235)
-GRID_LINE = (12, 40, 96)
 CHIP = (255, 150, 32)
-ARROW = (255, 236, 180)
 
 
 def _rounded(size: int, radius_ratio: float = 0.22):

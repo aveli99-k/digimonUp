@@ -11,7 +11,7 @@ import cv2
 import numpy as np
 from PIL import ImageGrab
 
-from imgio import imread_bgr, imwrite
+from imgio import imread_bgr
 from paths import BASE_DIR, CONFIG_PATH, resource
 # DPI 처리는 emulator_window 에 정본이 있다. 예전에는 여기에도 같은 함수가 한 벌 더
 # 있었는데, 한쪽만 고치면 다른 쪽이 조용히 어긋나므로 하나로 합쳤다.

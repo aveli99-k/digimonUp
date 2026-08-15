@@ -30,29 +30,13 @@ import cv2                                                    # noqa: E402
 
 import counters                                               # noqa: E402
 import imgio                                                  # noqa: E402
-from emulator_window import (capture_client, enable_dpi_awareness,  # noqa: E402
-                             enumerate_candidates)
+from emulator_window import (capture_client,                   # noqa: E402
+                             enable_dpi_awareness)
+from pickwin import pick_window                                # noqa: E402
 from paths import BASE_DIR                                    # noqa: E402
 
 OUT_DIR = os.path.join(BASE_DIR, "templates", "counters")
 
-
-def pick_window():
-    cands = enumerate_candidates()
-    if not cands:
-        print("앱플레이어 창을 찾지 못했습니다. 먼저 실행하세요.")
-        return None
-    known = [c for c in cands if c.emulator]
-    pool = known or cands
-    if len(pool) == 1:
-        return pool[0]
-    print("\n창을 고르세요.")
-    for i, c in enumerate(pool):
-        print(f"  {i}) {c.width}x{c.height} [{c.emulator or '모름'}] '{c.title}'")
-    try:
-        return pool[int(input("번호: ").strip())]
-    except (ValueError, IndexError):
-        return None
 
 
 def main() -> int:

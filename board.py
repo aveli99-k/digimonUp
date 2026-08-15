@@ -21,6 +21,8 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+from imgio import hsv_of
+
 N = 5                     # 5x5
 NLINES = N + 1            # 격자선 6개
 
@@ -68,11 +70,6 @@ class Grid:
 # --------------------------------------------------------------------------
 # 내부 헬퍼
 # --------------------------------------------------------------------------
-
-def hsv_of(img: np.ndarray) -> np.ndarray:
-    """BGR -> HSV. 한 프레임에서 마스크를 여러 번 쓸 때 한 번만 구해 돌려쓴다."""
-    return cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-
 
 def board_mask(img: np.ndarray, hsv: np.ndarray | None = None) -> np.ndarray:
     """게임판 색(청록 계열) 픽셀 마스크."""

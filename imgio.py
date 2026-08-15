@@ -57,3 +57,13 @@ def imwrite(path: str, img: np.ndarray) -> bool:
         return True
     except (OSError, cv2.error):
         return False
+
+
+def hsv_of(img: np.ndarray) -> np.ndarray:
+    """BGR -> HSV.
+
+    한 프레임에서 색 마스크를 여러 개 만들 때 이걸 한 번만 구해 돌려쓴다.
+    board 와 recognize 에 똑같은 정의가 하나씩 있었다. 색 판정의 기준이 되는
+    변환이라 두 벌이 따로 놀면 언젠가 한쪽만 고쳐진다.
+    """
+    return cv2.cvtColor(img, cv2.COLOR_BGR2HSV)

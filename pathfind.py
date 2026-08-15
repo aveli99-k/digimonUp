@@ -58,7 +58,6 @@ class PlanKind(str, Enum):
     GOAL = "목적지"
     ITEM = "근처 아이템"
     RIGHT_EDGE = "오른쪽 전진"
-    SCROLL_VERTICAL = "세로 이동으로 새 지형"
     BREAK_OBSTACLE = "장애물 파괴"
     NONE = "없음"
 
