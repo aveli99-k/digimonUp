@@ -1,9 +1,9 @@
 @echo off
 chcp 65001 > nul
 title digimonUp template capture
-cd /d "%~dp0"
+cd /d "%~dp0.."
 
-python capture.py
+python tools\capture.py
 
 echo.
 pause

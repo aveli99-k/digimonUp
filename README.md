@@ -20,14 +20,16 @@
 
 ## 빠른 시작
 
-**`digimonUp.vbs` 를 더블클릭하세요.** GUI 창 하나만 뜨고 검은 cmd 창은 뜨지 않습니다.
+**바탕화면의 `digimonUp 매크로` 바로가기를 더블클릭하세요.** GUI 창 하나만 뜨고
+검은 cmd 창은 뜨지 않습니다. (바로가기가 없다면 아래 '바탕화면 바로가기' 참고)
 
 | 실행 방법 | cmd 창 | 쓰임새 |
 |---|---|---|
-| `digimonUp.vbs` (더블클릭) | 없음 | **평소 사용** |
-| `dist\digimonUp.exe` | 없음 | EXE 로 빌드한 경우 |
-| `run.bat` | 없음 (pythonw 로 띄우고 바로 종료) | 탐색기에서 실행 |
-| `run.bat 1` / `run.bat 2` | 있음 | 콘솔에서 로그를 보며 실행 |
+| 바탕화면 `digimonUp 매크로` 바로가기 | 없음 | **평소 사용** |
+| `dist\digimonUp.exe` | 없음 | 빌드된 EXE 직접 실행 |
+| `scripts\digimonUp.vbs` (더블클릭) | 없음 | EXE 없이 파이썬으로 실행 |
+| `scripts\run.bat` | 없음 (pythonw 로 띄우고 바로 종료) | 탐색기에서 실행 |
+| `scripts\run.bat 1` / `2` | 있음 | 콘솔에서 로그를 보며 실행 |
 
 **중복 실행은 막혀 있습니다.** 이미 떠 있는 상태에서 또 실행하면 새 창을 만들지 않고
 기존 창을 앞으로 가져옵니다. (두 개가 동시에 돌면 같은 게임 창에 서로 클릭을 날려
@@ -36,7 +38,7 @@
 또는 EXE 로 만들어 쓰기:
 
 ```bash
-build_exe.bat
+scripts\build_exe.bat
 ```
 
 빌드하면 `dist\digimonUp.exe` 가 생깁니다. **EXE 를 옮길 때는 `config.json` 과
@@ -46,13 +48,13 @@ build_exe.bat
 바탕화면 바로가기:
 
 ```bash
-powershell -ExecutionPolicy Bypass -File create_shortcut.ps1 -Desktop
+powershell -ExecutionPolicy Bypass -File scripts\create_shortcut.ps1 -Desktop
 ```
 
 콘솔에서 번호로 바로 실행하고 싶다면:
 
 ```bash
-run.bat 2
+scripts\run.bat 2
 ```
 
 ---
@@ -61,7 +63,6 @@ run.bat 2
 
 | 파일 | 설명 |
 |---|---|
-| `digimonUp.vbs` | **콘솔 없이 GUI 만 띄우는 실행기 (평소 이걸 더블클릭)** |
 | `launcher.py` | 진입점. 인자 없으면 GUI, `1`/`2` 를 주면 콘솔 실행 |
 | `single_instance.py` | 중복 실행 방지 (Windows 뮤텍스) |
 | `gui.py` | 시작/정지, HWND 표시, 로그, 오버레이 미리보기 |
@@ -72,9 +73,11 @@ run.bat 2
 | `recognize.py` | 셀 상태(플레이어/목적지/장애물/아이템/빈칸) 인식 |
 | `pathfind.py` | 경로 계산 |
 | `overlay.py` | 디버그 오버레이 그리기 |
-| `capture_explore.py` | 탐사용 템플릿 캡처 (창 클라이언트 기준) |
-| `capture.py` / `check.py` | 1번 기능용 버튼 템플릿 캡처 / 인식 점검 |
-| `tests/` | 자동 테스트 (93개) |
+| `imgio.py` | 한글 경로 이미지 읽기/쓰기 (cv2 우회) |
+| `paths.py` / `settings.py` | 실행 위치 기준 경로, config.json 읽기 |
+| `tools/` | 템플릿 캡처 · 인식 점검 도구 |
+| `scripts/` | 실행 · 빌드 · 바로가기 생성 스크립트 |
+| `tests/` | 자동 테스트 (97개) |
 
 ---
 
@@ -307,7 +310,7 @@ blocked_toast 3 — 실제 게임 화면에서 잘라 만든 것)
 템플릿이 하나도 없어도 색 기반 인식으로 동작하지만, 넣으면 정확도가 올라갑니다.
 
 ```bash
-python capture_explore.py
+python tools\capture_explore.py
 ```
 
 `templates/explore/<종류>/` 에 저장되고, 같은 종류에 **여러 장** 넣어도 됩니다
@@ -372,7 +375,6 @@ python capture_explore.py
 | `require_top_tab` | `true` | `false` 면 탭 템플릿이 있어도 검사를 건너뜀 |
 | `move_timeout_sec` | `2.2` | 한 칸 이동 확인 최대 대기 |
 | `confirm_repeat` | `2` | 예상 칸을 몇 번 연속 확인해야 성공으로 볼지 |
-| `scroll_ratio` | `0.55` | 게임판이 셀 크기의 이 비율만큼 밀리면 스크롤로 인정 |
 | `poll_interval_sec` | `0.06` | 이동 확인 폴링 주기 |
 | `cycle_pause_sec` | `0.25` | 전체 재인식 사이 쉬는 시간 |
 | `toast_min` | `0.65` | 이동 불가 안내문 최소 유사도 |

@@ -7,13 +7,22 @@
 
 from __future__ import annotations
 
+# 이 도구는 tools/ 안에 있지만 루트의 common / mumu_window 등을 가져다 쓴다.
+# 실행 방식(python tools/x.py, 배치 파일, IDE)에 상관없이 import 가 되도록
+# 루트를 sys.path 에 직접 넣는다. 다른 import 보다 먼저 와야 한다.
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import os
 import sys
 import time
 
 import cv2
 
-from common import BASE_DIR, enable_dpi_awareness, ensure_windows, grab_screen, imwrite_unicode
+from common import BASE_DIR, enable_dpi_awareness, ensure_windows, grab_screen
+from imgio import imwrite
 
 TARGETS = {
     "1": ("매칭 버튼", "matching.png"),
@@ -71,7 +80,7 @@ def main() -> int:
     out_dir = os.path.join(BASE_DIR, "templates")
     os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, filename)
-    if not imwrite_unicode(out_path, crop):
+    if not imwrite(out_path, crop):
         print(f"저장 실패: {out_path}")
         return 1
 

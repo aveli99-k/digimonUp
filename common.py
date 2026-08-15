@@ -11,18 +11,11 @@ import cv2
 import numpy as np
 from PIL import ImageGrab
 
-from paths import BASE_DIR, CONFIG_PATH  # noqa: F401  (기존 import 경로 유지)
-
-
-def enable_dpi_awareness() -> None:
-    """디스플레이 배율(125%, 150% 등)이 켜져 있어도 좌표가 어긋나지 않게 한다."""
-    try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PER_MONITOR_DPI_AWARE
-    except Exception:
-        try:
-            ctypes.windll.user32.SetProcessDPIAware()
-        except Exception:
-            pass
+from imgio import imread_bgr, imwrite
+from paths import BASE_DIR, CONFIG_PATH
+# DPI 처리는 mumu_window 에 정본이 있다. 예전에는 여기에도 같은 함수가 한 벌 더
+# 있었는데, 한쪽만 고치면 다른 쪽이 조용히 어긋나므로 하나로 합쳤다.
+from mumu_window import enable_dpi_awareness  # noqa: F401  (여기서 계속 가져다 쓴다)
 
 
 def load_config() -> dict:
@@ -46,42 +39,15 @@ def grab_screen(region=None) -> np.ndarray:
     return cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
 
 
-def imread_unicode(path: str, flags: int = cv2.IMREAD_COLOR):
-    """cv2.imread 는 Windows 에서 한글 경로를 못 읽으므로 우회한다."""
-    try:
-        buf = np.fromfile(path, dtype=np.uint8)
-    except OSError:
-        return None
-    if buf.size == 0:
-        return None
-    return cv2.imdecode(buf, flags)
-
-
-def imwrite_unicode(path: str, img: np.ndarray) -> bool:
-    """cv2.imwrite 의 한글 경로 우회 버전."""
-    ext = os.path.splitext(path)[1] or ".png"
-    ok, buf = cv2.imencode(ext, img)
-    if not ok:
-        return False
-    buf.tofile(path)
-    return True
-
-
 def load_template(path: str) -> np.ndarray:
     if not os.path.exists(path):
         raise FileNotFoundError(
             f"템플릿 이미지가 없습니다: {path}\n"
-            f"먼저 capture.py 를 실행해서 버튼 이미지를 잘라 저장하세요."
+            f"먼저 tools/capture.py 를 실행해서 버튼 이미지를 잘라 저장하세요."
         )
-    tpl = imread_unicode(path, cv2.IMREAD_UNCHANGED)
+    tpl = imread_bgr(path)
     if tpl is None:
         raise ValueError(f"템플릿 이미지를 읽을 수 없습니다: {path}")
-
-    # PNG 에 알파 채널이 있으면 투명 영역이 매칭을 방해하므로 BGR 로 통일한다.
-    if tpl.ndim == 2:
-        tpl = cv2.cvtColor(tpl, cv2.COLOR_GRAY2BGR)
-    elif tpl.shape[2] == 4:
-        tpl = cv2.cvtColor(tpl, cv2.COLOR_BGRA2BGR)
     return tpl
 
 

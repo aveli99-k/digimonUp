@@ -33,7 +33,6 @@
     "move_timeout_sec": 2.2,
     "poll_interval_sec": 0.06,
     "confirm_repeat": 2,
-    "scroll_ratio": 0.55,
     "move_duration": 0.05,
     "cycle_pause_sec": 0.25,
     "lost_retry_sec": 0.8,

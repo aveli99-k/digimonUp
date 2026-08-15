@@ -191,7 +191,7 @@ class App:
             self.msgq.put(("done", None))
 
     def _run_explore(self) -> None:
-        from explore import ExploreConfig, ExploreEngine
+        from explore import ExploreEngine
         from settings import load_explore_config
 
         engine = ExploreEngine(load_explore_config(), log=self.log,

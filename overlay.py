@@ -10,12 +10,11 @@
 
 from __future__ import annotations
 
-import os
-
 import cv2
 import numpy as np
 
-from board import Grid, N
+from board import Grid
+from imgio import imwrite
 from recognize import Kind, Scene
 
 COLOR = {
@@ -101,13 +100,5 @@ def _draw_header(img: np.ndarray, text: str) -> None:
 
 
 def save(path: str, img: np.ndarray) -> bool:
-    """한글 경로에도 저장되도록 imencode 를 쓴다."""
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        ok, buf = cv2.imencode(os.path.splitext(path)[1] or ".png", img)
-        if not ok:
-            return False
-        buf.tofile(path)
-        return True
-    except Exception:
-        return False
+    """디버그 오버레이 저장. 한글 경로 처리는 imgio 가 맡는다."""
+    return imwrite(path, img)

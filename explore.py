@@ -31,12 +31,12 @@ import numpy as np
 import overlay
 from board import Grid, N, detect_board
 from mumu_window import MuMuWindow, capture_client, enumerate_candidates
-from pathfind import Plan, PlanKind, plan_route
+from pathfind import PlanKind, plan_route
 from recognize import (Kind, Scene, TemplateSet, analyze, find_blocked_toast,
                        find_green_button, find_top_tab, hsv_of, load_templates,
                        mask_highlight, mask_obstacle, track_player_fast, _frac)
 
-from paths import BASE_DIR, DEBUG_DIR  # noqa: F401
+from paths import DEBUG_DIR
 
 
 @dataclass
@@ -51,7 +51,6 @@ class ExploreConfig:
     move_timeout_sec: float = 2.2      # 한 칸 이동 확인 최대 대기
     poll_interval_sec: float = 0.06    # 이동 확인 폴링 주기
     confirm_repeat: int = 2            # 예상 칸을 몇 번 연속 확인해야 성공으로 볼지
-    scroll_ratio: float = 0.55         # 게임판이 셀 높이의 이 비율만큼 밀리면 스크롤로 인정
     move_duration: float = 0.05        # 마우스 이동 시간
 
     # 사이클
@@ -125,7 +124,6 @@ class ExploreEngine:
         self.locked_grid: Grid | None = None
         self._locked_size: tuple[int, int] | None = None
         self._grid_votes: deque = deque(maxlen=9)
-        self.grid_rejects = 0
 
     # ---------------------------------------------------------------- 정지
     def stop(self) -> None:
@@ -287,8 +285,6 @@ class ExploreEngine:
                 self.locked_grid.xs[0] // 8, self.locked_grid.ys[0] // 8):
             self.log(f"[격자] 다수결로 갱신: y0 {self.locked_grid.ys[0]} -> "
                      f"{chosen.ys[0]} ({votes}/{len(self._grid_votes)}표)")
-        elif grid is not None and key != best_key:
-            self.grid_rejects += 1
 
         self.locked_grid = chosen
         return chosen

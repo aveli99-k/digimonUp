@@ -10,8 +10,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 import pathfind
 from board import Grid, N
 from pathfind import PlanKind, plan_route

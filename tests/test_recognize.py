@@ -240,7 +240,7 @@ def _real_templates():
         t.name, t.allow_flip = name, name.startswith("player")
         t.paths = sorted(glob.glob(os.path.join(paths.EXPLORE_TEMPLATE_DIR,
                                                 name, "*.png")))
-        t.images = [im for im in (recognize._imread_unicode(p) for p in t.paths)
+        t.images = [im for im in (recognize.imread_bgr(p) for p in t.paths)
                     if im is not None]
         out[name] = t
     return out
@@ -282,13 +282,10 @@ def test_진짜_템플릿으로도_전체_인식이_충분히_빠르다():
 
 
 # ------------------------------- 안내문 검사 (이동 확인 루프의 진짜 병목이었다)
-def _toast_pasted(img, tset, at=(126, 585)):
-    """실제 안내문 템플릿을 프레임에 붙여 '안내문이 뜬 화면'을 만든다."""
-    out = img.copy()
-    tpl = tset.images[0]
-    x, y = at
-    out[y:y + tpl.shape[0], x:x + tpl.shape[1]] = tpl
-    return out
+# explore_toast.png 는 실제 게임에서 '해당 위치로 이동할 수 없습니다' 가 떠 있을 때
+# 찍은 프레임이다. 템플릿을 잘라낸 그 프레임이 아니라 **다른 프레임**을 골랐다.
+# (템플릿 원본을 쓰면 점수가 정확히 1.0 이라 매칭을 시험하는 의미가 없다.)
+TOAST_FIXTURE = "tests/fixtures/explore_toast.png"
 
 
 def test_안내문_검사가_이동_확인_루프를_막지_않는다():
@@ -314,17 +311,24 @@ def test_안내문_검사가_이동_확인_루프를_막지_않는다():
 
 
 def test_2단계_매칭이_안내문을_놓치지_않는다():
-    """속도를 위해 축소본으로 선별하더라도 판정은 그대로여야 한다."""
+    """속도를 위해 축소본으로 선별하더라도 판정은 그대로여야 한다.
+
+    실제 게임 프레임 두 장으로 확인한다. 안내문이 뜬 프레임과 안 뜬 프레임이
+    toast_min(0.65)을 사이에 두고 확실히 갈려야 한다.
+    """
     tpl = _real_templates()
     if not tpl["blocked_toast"]:
         pytest.skip("templates/explore/blocked_toast 가 비어 있습니다")
+    toasted = cv2.imread(TOAST_FIXTURE)
     clean = cv2.imread("tests/fixtures/explore_sample3.png")
-    toasted = _toast_pasted(clean, tpl["blocked_toast"])
+    assert toasted is not None and clean is not None
 
     on, _ = recognize.find_blocked_toast(toasted, tpl["blocked_toast"])
     off, _ = recognize.find_blocked_toast(clean, tpl["blocked_toast"])
     assert on >= 0.65, f"안내문이 떠 있는데 점수가 {on:.3f} 입니다"
     assert off < 0.65, f"안내문이 없는데 점수가 {off:.3f} 입니다"
+    # 축소 선별이 아슬아슬하게 통과하는 게 아니라 여유 있게 갈리는지도 본다.
+    assert on - off > 0.15, f"안내문 유무의 점수 차가 {on - off:.3f} 뿐입니다"
 
 
 def test_2단계_매칭_점수가_전체_해상도_매칭과_같다():
@@ -340,8 +344,7 @@ def test_2단계_매칭_점수가_전체_해상도_매칭과_같다():
     tpl = _real_templates()
     if not tpl["blocked_toast"]:
         pytest.skip("templates/explore/blocked_toast 가 비어 있습니다")
-    img = _toast_pasted(cv2.imread("tests/fixtures/explore_sample3.png"),
-                        tpl["blocked_toast"])
+    img = cv2.imread(TOAST_FIXTURE)
     scales = (0.85, 1.0, 1.15)
     want, wbox, _ = recognize.match_best(img, tpl["blocked_toast"], scales=scales)
     got, gbox, _ = recognize.match_big(img, tpl["blocked_toast"], scales=scales)

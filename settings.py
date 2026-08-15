@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import json
-import os
 
-from paths import BASE_DIR, CONFIG_PATH  # noqa: F401
+from paths import CONFIG_PATH
 
 
 def load_raw() -> dict:

@@ -10,7 +10,8 @@ Dim fso, shell, baseDir, launcher, pythonw, cmd
 Set fso = CreateObject("Scripting.FileSystemObject")
 Set shell = CreateObject("WScript.Shell")
 
-baseDir = fso.GetParentFolderName(WScript.ScriptFullName)
+' 이 스크립트는 scripts/ 안에 있고 실제 프로젝트는 그 위 폴더다.
+baseDir = fso.GetParentFolderName(fso.GetParentFolderName(WScript.ScriptFullName))
 launcher = fso.BuildPath(baseDir, "launcher.py")
 
 If Not fso.FileExists(launcher) Then

@@ -58,21 +58,6 @@ class Grid:
         x0, y0, x1, y1 = self.cell_rect(row, col)
         return (x0 + x1) // 2, (y0 + y1) // 2
 
-    def locate(self, x: float, y: float) -> tuple[int, int] | None:
-        """클라이언트 좌표가 몇 번째 셀인지. 게임판 밖이면 None."""
-        col = row = None
-        for c in range(N):
-            if self.xs[c] <= x < self.xs[c + 1]:
-                col = c
-                break
-        for r in range(N):
-            if self.ys[r] <= y < self.ys[r + 1]:
-                row = r
-                break
-        if row is None or col is None:
-            return None
-        return row, col
-
     def clamp_locate(self, x: float, y: float) -> tuple[int, int]:
         """게임판을 살짝 벗어나도 가장 가까운 셀로 붙여서 돌려준다."""
         col = int(np.clip(np.searchsorted(self.xs, x, side="right") - 1, 0, N - 1))

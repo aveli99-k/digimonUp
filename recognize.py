@@ -36,8 +36,8 @@ import cv2
 import numpy as np
 
 from board import Grid, N
-
-from paths import BASE_DIR, EXPLORE_TEMPLATE_DIR as TEMPLATE_DIR  # noqa: F401
+from imgio import imread_bgr
+from paths import EXPLORE_TEMPLATE_DIR as TEMPLATE_DIR
 
 
 class Kind(str, Enum):
@@ -86,24 +86,6 @@ class Scene:
 # 템플릿 로딩
 # --------------------------------------------------------------------------
 
-def _imread_unicode(path: str):
-    """cv2.imread 는 Windows 에서 한글 경로를 못 읽으므로 우회한다."""
-    try:
-        buf = np.fromfile(path, dtype=np.uint8)
-    except OSError:
-        return None
-    if buf.size == 0:
-        return None
-    img = cv2.imdecode(buf, cv2.IMREAD_UNCHANGED)
-    if img is None:
-        return None
-    if img.ndim == 2:
-        return cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-    if img.shape[2] == 4:
-        return cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-    return img
-
-
 class TemplateSet:
     """templates/explore/<이름>/ 안의 모든 PNG 를 불러 둔다."""
 
@@ -119,7 +101,7 @@ class TemplateSet:
         self._prepared = {}
         folder = os.path.join(TEMPLATE_DIR, self.name)
         for path in sorted(glob.glob(os.path.join(folder, "*.png"))):
-            img = _imread_unicode(path)
+            img = imread_bgr(path)
             if img is not None and img.size:
                 self.images.append(img)
                 self.paths.append(path)

@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 > nul
-cd /d "%~dp0"
+cd /d "%~dp0.."
 
 REM 인자가 없으면 GUI 만 띄운다. pythonw 는 콘솔이 없는 파이썬이라
 REM 검은 cmd 창이 뜨지 않는다. start /b 로 띄우고 배치는 바로 끝난다.
