@@ -387,6 +387,33 @@ MOTION_CELL_MIN = 0.05       # 칸에서 움직인 픽셀 비율이 이 이상�
 MOTION_MAX_CELLS = 6         # 이보다 많은 칸이 움직였으면 판 전체가 움직이는 중
 
 
+def motion_report(frames: list[np.ndarray], grid: Grid):
+    """칸별 '움직인 픽셀 비율'을 재서 (움직인 칸 수, 가장 움직인 칸, 그 비율).
+
+    움직인 칸이 MOTION_MAX_CELLS 를 넘으면 **판이 통째로 움직이는 중**이다.
+    그런 프레임은 플레이어 위치뿐 아니라 칩/장애물 인식도 믿을 수 없다.
+    (실측: 스크롤 애니메이션 중에 찍힌 프레임에서 칩이 7개로 잡혔고, 매크로가
+     그 유령 칩을 먹으러 왼쪽으로 갔다. 정지 화면에서는 한 번도 안 나온다.)
+    """
+    if len(frames) < 2 or grid is None:
+        return 0, None, 0.0
+    grays = [cv2.cvtColor(f, cv2.COLOR_BGR2GRAY) for f in frames]
+    acc = None
+    for a, b in zip(grays, grays[1:]):
+        d = cv2.absdiff(a, b)
+        acc = d if acc is None else np.maximum(acc, d)
+    moved = (acc > MOTION_PIXEL_DIFF)
+
+    ratios: dict[tuple[int, int], float] = {}
+    for r in range(N):
+        for c in range(N):
+            x0, y0, x1, y1 = grid.cell_rect(r, c)
+            ratios[(r, c)] = float(moved[y0:y1, x0:x1].mean())
+    busy = sum(1 for v in ratios.values() if v >= MOTION_CELL_MIN)
+    cell, best = max(ratios.items(), key=lambda kv: kv[1])
+    return busy, cell, best
+
+
 def motion_player_cell(frames: list[np.ndarray], grid: Grid
                        ) -> tuple[tuple[int, int], float] | None:
     """연속 프레임에서 **움직인 칸**을 찾아 플레이어 칸을 돌려준다.
@@ -402,32 +429,15 @@ def motion_player_cell(frames: list[np.ndarray], grid: Grid
 
     반환: ((행, 열), 움직임 비율) — 판이 통째로 움직이는 중이면 None.
     """
-    if len(frames) < 2 or grid is None:
+    busy, cell, best = motion_report(frames, grid)
+    if cell is None or best < MOTION_CELL_MIN:
         return None
-    grays = [cv2.cvtColor(f, cv2.COLOR_BGR2GRAY) for f in frames]
-    acc = None
-    for a, b in zip(grays, grays[1:]):
-        d = cv2.absdiff(a, b)
-        acc = d if acc is None else np.maximum(acc, d)
-    moved = (acc > MOTION_PIXEL_DIFF)
-
-    ratios: dict[tuple[int, int], float] = {}
-    for r in range(N):
-        for c in range(N):
-            x0, y0, x1, y1 = grid.cell_rect(r, c)
-            ratios[(r, c)] = float(moved[y0:y1, x0:x1].mean())
-
-    busy = [rc for rc, v in ratios.items() if v >= MOTION_CELL_MIN]
-    if not busy:
-        return None
-    if len(busy) > MOTION_MAX_CELLS:
+    if busy > MOTION_MAX_CELLS:
         # 판이 스크롤하거나 화면이 통째로 바뀌는 중이다. 이때는 못 믿는다.
         return None
-
     # 머리는 위 칸으로, 발은 아래 칸으로 조금씩 삐져나오지만 **몸통이 있는 칸이
     # 언제나 가장 많이 움직인다.** 실측에서 몸통 0.296 대 머리 0.105 로 세 배
     # 차이가 났다. 그래서 위아래로 더 보정하지 않고 최댓값 칸을 그대로 쓴다.
-    cell, best = max(ratios.items(), key=lambda kv: kv[1])
     return cell, best
 
 
@@ -468,6 +478,7 @@ def _highlight_center(
                 continue
             # 이 칸에 플레이어가 있다면 강조됐어야 할 칸들.
             pred = {(r, c)}
+            impossible = False
             for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
                 nr, nc = r + dr, c + dc
                 if not (0 <= nr < N and 0 <= nc < N):
@@ -475,7 +486,16 @@ def _highlight_center(
                 if cells is not None and cells[nr][nc] == Kind.OBSTACLE:
                     continue            # 장애물로는 못 간다
                 pred.add((nr, nc))
-            if len(pred) < 2:
+                # **바로 옆 빈칸이 안 칠해져 있으면 그 칸에 플레이어가 있을 수 없다.**
+                # 강조 범위는 넓어질 수는 있어도 1칸보다 좁아지지는 않기 때문이다.
+                # 칩/아이템 칸은 그림이 강조색을 덮어 검출이 놓치므로 빼고 본다.
+                # (실측 회귀: 이 검사가 없어서 (2,2) 가 빈칸인데 안 칠해졌는데도
+                #  (2,1) 을 플레이어로 골라, 진짜 위치 (1,1) 을 덮어썼다.)
+                if (cells is not None and cells[nr][nc] == Kind.EMPTY
+                        and (nr, nc) not in hl):
+                    impossible = True
+                    break
+            if impossible or len(pred) < 2:
                 continue
             score = len(pred & hl) / len(pred | hl)
             scored.append((-score, (r, c)))
@@ -691,18 +711,16 @@ def detect_player(img: np.ndarray, grid: Grid, tpl: dict[str, TemplateSet],
         conf = min(1.0, conf + 0.15)
         note += " + 강조칸 일치"
     elif hint:
-        # **둘이 다르면 강조칸이 이긴다.**
+        # **강조칸으로 이미지 결과를 덮지 않는다.**
         #
-        # 강조칸은 게임이 직접 그린 것이라 디지몬 생김새와 무관하다. 반면
-        # 이미지 인식은 디지몬을 바꾸면 바로 무너진다. 실측한 불일치 사례에서는
-        # 예외 없이 강조칸이 옳았다.
-        #     디지몬 교체 후 몸통 조각이 반대쪽 끝 (2,4) 에 붙음 -> 강조칸 (2,1) 정답
-        #     파란 디지몬이 파란 배경에 묻혀 (4,4) 분홍 생물체를 잡음 -> (2,1) 정답
-        #     (3,1) 이 장애물이라 강조가 셋뿐인데 (4,2) 로 읽음 -> (4,1) 정답
-        # 이미지 쪽을 따르면 몇 칸 떨어진 곳을 클릭해 이동이 전부 실패한다.
-        note += f" -> 강조칸 역산 {hint} 로 교정 (이미지는 {(row, col)})"
-        row, col = hint
-        conf = max(conf, 0.75 if hint_sure else 0.65)
+        # 강조 범위는 4칸 고정이 아니라 이동력에 따라 넓어진다. 그걸 반지름 1 로
+        # 놓고 맞춰 보면 엉뚱한 칸이 더 그럴듯해 보인다. 실측 회귀: 진짜 위치
+        # (1,1) 을 (2,1) 로 덮어써서 UP 클릭이 자기 자신을 누르는 꼴이 됐고,
+        # 게임이 거절해 같은 실패가 계속 반복됐다(120초에 안내문 14회).
+        #
+        # 지금은 움직임이 가장 확실한 신호이고 그 다음이 템플릿이다. 강조칸은
+        # 둘 다 실패해 위치를 아예 못 잡았을 때의 최후 수단으로만 남긴다.
+        note += f" (강조칸 역산 {hint} 는 참고만)"
 
     return Detection(Kind.PLAYER, row, col, float(conf), bbox, note,
                      sprite=blob[3] if blob else None)
@@ -721,6 +739,9 @@ ITEM_TEMPLATE_MIN = 0.78
 # 칩/아이템 칸에 주황이 최소 이만큼은 있어야 한다.
 # 실측: 진짜 칩 0.099 / 칩 없는 칸 0.000~0.020.
 CARD_ORANGE_MIN = 0.04
+# 칩/아이템이 칸 한가운데에서 이만큼까지 벗어나도 봐준다 (0.5 가 한가운데).
+# 실측: 진짜 칩 0.50, 획득 연출로 튀어나온 칩 0.13 / 0.75 / 0.88.
+CARD_CENTER_SLACK = 0.22
 # 강조칸 역산을 '확실하다'고 볼 겹침 비율. 실측: 맞는 칸 0.75~1.00.
 HIGHLIGHT_SURE_MIN = 0.6
 
@@ -799,9 +820,23 @@ def _match_cells(img: np.ndarray, grid: Grid, cells, tpl: dict[str, TemplateSet]
                 if cells[r][c] == Kind.OBSTACLE:
                     continue
                 x0, y0, x1, y1 = grid.cell_rect(r, c)
-                score, _, label = match_best(img[y0:y1, x0:x1], tset, scales=scales)
+                score, box, label = match_best(img[y0:y1, x0:x1], tset, scales=scales)
                 if score < thr:
                     continue
+                # 칸 한가운데에 놓여 있어야 판 위의 물건이다.
+                #
+                # 칩을 먹으면 디지몬 주변으로 **칩이 튀어나오는 획득 연출**이
+                # 뜬다. 그 칩들은 셀 경계에 걸쳐 비스듬히 그려지는데 템플릿
+                # 점수는 0.94~0.98 로 진짜와 구별되지 않는다. 매크로가 그걸
+                # 판 위의 칩으로 알고 왼쪽으로 쫓아갔다.
+                # 실측 칸 안 중심 (0.50/0.50 이 한가운데)
+                #     진짜 칩   0.50/0.50
+                #     연출 칩   0.13/0.36, 0.75/0.88, 0.48/0.75
+                if box is not None:
+                    mx = (box[0] + box[2]) / 2 / max(1, x1 - x0)
+                    my = (box[1] + box[3]) / 2 / max(1, y1 - y0)
+                    if abs(mx - 0.5) > CARD_CENTER_SLACK or abs(my - 0.5) > CARD_CENTER_SLACK:
+                        continue
                 # 주황 확인은 **칩에만** 건다. 아이템은 색이 제각각이라
                 # (부수기 노랑, 돌진 초록) 주황을 요구하면 놓친다.
                 if (key == "goal"

@@ -37,8 +37,9 @@ from emulator_window import (EmulatorWindow, capture_client,
 from pathfind import PlanKind, plan_route
 from recognize import (Kind, Scene, TemplateSet, analyze, find_blocked_toast,
                        find_green_button, find_top_tab, hsv_of, load_templates,
-                       mask_highlight, mask_obstacle, motion_player_cell,
+                       mask_highlight, mask_obstacle, motion_report,
                        track_player_fast, _frac)
+from recognize import MOTION_CELL_MIN, MOTION_MAX_CELLS
 
 from paths import DEBUG_DIR
 
@@ -173,6 +174,9 @@ class ExploreEngine:
         # 마지막 전체 인식에서 알아낸 '플레이어가 아닌 칸'(장애물/칩/아이템).
         # 이동 확인 중 빠른 추적이 그것들을 플레이어로 잡지 않도록 넘겨준다.
         self._not_player: set = set()
+        # 마지막 움직임 검사에서 '판이 아직 스크롤 중'이었는지.
+        # 그런 프레임은 칩/장애물 인식도 믿을 수 없어 그 사이클을 통째로 건너뛴다.
+        self._board_animating = False
 
     # ---------------------------------------------------------------- 정지
     def stop(self) -> None:
@@ -407,16 +411,31 @@ class ExploreEngine:
         온 화면이 움직이므로 그쪽에서 None 을 돌려주고, 그때는 기존 방식으로
         되돌아간다.
         """
-        frames = [img]
-        for _ in range(self.cfg.motion_frames - 1):
-            self._check_stop()
-            time.sleep(self.cfg.motion_gap_sec)
-            shot = self._capture()
-            if shot is None:
-                return None
-            frames.append(shot)
-        got = motion_player_cell(frames, grid)
-        return None if got is None else got[0]
+        if self.cfg.motion_frames < 2:
+            return None                 # 움직임 인식 끔
+        self._board_animating = False
+        # 두 번까지 시도한다. 첫 묶음은 스크롤 직후라 화면 전체가 움직이는
+        # 중일 때가 많아 못 쓴다(실측: 사이클의 절반에서 움직임을 못 썼다).
+        # 그때는 조금 더 기다렸다가 한 번 더 찍으면 판이 가라앉아 있다.
+        frames: list[np.ndarray] = [img]
+        for attempt in range(2):
+            while len(frames) < self.cfg.motion_frames * (attempt + 1):
+                self._check_stop()
+                time.sleep(self.cfg.motion_gap_sec)
+                shot = self._capture()
+                if shot is None:
+                    return None
+                frames.append(shot)
+            recent = frames[-self.cfg.motion_frames:]
+            busy, cell, ratio = motion_report(recent, grid)
+            if busy > MOTION_MAX_CELLS:
+                self._board_animating = True
+                continue                # 아직 스크롤 중이다. 한 번 더 기다린다.
+            self._board_animating = False
+            if cell is not None and ratio >= MOTION_CELL_MIN:
+                return cell
+            return None
+        return None
 
     # ------------------------------------------------- 아이템 개수 모니터링
     def _update_counts(self, img: np.ndarray) -> None:
@@ -744,6 +763,12 @@ class ExploreEngine:
                 # 몇 장 더 찍어 어느 칸이 움직였는지 본다. 디지몬은 서 있을 때도
                 # 제자리 애니메이션이 돌아가는 판 위의 유일한 움직이는 물체다.
                 motion = self._motion_cell(img, grid)
+                if self._board_animating:
+                    # 판이 아직 스크롤 중이다. 이 프레임으로 계획을 세우면 안 된다.
+                    # 실측: 애니메이션 중 프레임에서 칩이 7개로 잡혔고, 매크로가
+                    # 그 유령 칩을 먹으러 왼쪽으로 갔다(150초에 되돌림 11회).
+                    self._sleep(self.cfg.motion_gap_sec)
+                    continue
 
                 scene = analyze(img, grid, self.templates,
                                 self.cfg.orange_goal_without_template,

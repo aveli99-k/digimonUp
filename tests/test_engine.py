@@ -59,8 +59,10 @@ class FakeWindow:
 
 
 def _engine(frames, **cfg_kw):
+    # 합성 화면은 정지 이미지라 움직임으로 플레이어를 찾을 수 없다. 촬영에
+    # 시간만 쓰므로 끈다(motion_frames < 2 면 건너뛴다).
     defaults = dict(move_timeout_sec=0.5, poll_interval_sec=0.0,
-                    click_settle_sec=0.0, save_debug=False)
+                    click_settle_sec=0.0, save_debug=False, motion_frames=1)
     defaults.update(cfg_kw)
     cfg = ExploreConfig(**defaults)
     eng = ExploreEngine(cfg, log=lambda *_: None)
