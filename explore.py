@@ -181,6 +181,8 @@ class ExploreEngine:
         # 스크롤했는지. 칩 획득 이펙트를 걸러내는 데 쓴다(_confirm_goals).
         self._prev_goals: set = set()
         self._scrolls_since = 0
+        # 첫 인식에는 견줄 직전 화면이 없다. 그때만 무조건 받아들인다.
+        self._first_goal_scan = True
 
     # ---------------------------------------------------------------- 정지
     def stop(self) -> None:
@@ -443,28 +445,40 @@ class ExploreEngine:
 
     # ------------------------------------------- 칩 획득 이펙트 걸러내기
     def _confirm_goals(self, scene: Scene) -> None:
-        """**두 사이클 연속으로 같은 자리에 보인 칩만** 진짜로 인정한다.
+        """**칩은 오른쪽 끝으로만 새로 들어온다.** 그 밖에서 생긴 칩은 무시한다.
 
         칩을 먹으면 디지몬 주변으로 칩이 흩어지는 이펙트가 뜬다. 그 칩들은
         템플릿 점수 0.94~0.98, 주황 비율 0.096~0.202 로 진짜와 전혀 구별되지
-        않는다. 셀 한가운데 정렬 검사로 상당수는 걸러지지만, 우연히 가운데
-        근처에 떨어진 것은 그대로 통과한다. 모양과 색으로는 더 가를 수 없다.
+        않는다. 진짜 칩과 **같은 그림**이라 모양·색·위치로는 가를 수 없다.
 
-        가르는 것은 **시간**이다. 이펙트 칩은 잠깐 떴다 사라지고, 진짜 칩은
-        다음 사이클에도 그 자리에 있다. 그사이 오른쪽으로 전진했다면 판이
-        밀렸으므로 열 번호가 그만큼 줄어든 자리에 있다.
+        가르는 것은 게임 규칙이다. 판은 오른쪽으로 전진할 때만 밀리고, 그때
+        **맨 오른쪽 열로만 새 지형이 들어온다**(19장). 그러니 칩이 새로 나타날
+        수 있는 자리는 그 새 열뿐이다. 전진하지 않았다면 새 칩은 아예 생길 수
+        없다. 판 한가운데에 갑자기 늘어난 칩은 예외 없이 이펙트다.
 
-        새로 들어온 칩은 한 사이클 늦게 인정된다. 2열 이상의 칩은 어차피 그
-        행에 서서 전진해야 들어오는 것이라(pathfind 참고) 한 사이클 늦어도
-        손해가 없다.
+        그래서 이번에 보인 칩은 다음 둘 중 하나여야 인정한다.
+            1. 직전 사이클에도 있던 칩 (그사이 전진한 만큼 열이 줄어든 자리)
+            2. 그사이 새로 들어온 열에 있는 칩 (오른쪽 끝 k 개 열)
+
+        한 번 놓쳤다 다시 보인 진짜 칩은 한 사이클 늦게 인정된다. 2열 이상의
+        칩은 어차피 그 행에 서서 전진해야 들어오는 것이라 손해가 없다.
         """
         now = {(d.row, d.col) for d in scene.goals}
         shift = self._scrolls_since
+
+        if self._first_goal_scan:
+            # 처음에는 견줄 대상이 없다. 판단을 미루고 그대로 받는다.
+            self._first_goal_scan = False
+            self._prev_goals, self._scrolls_since = now, 0
+            return
+
         expected = {(r, c - shift) for r, c in self._prev_goals}
-        confirmed = now & expected
+        fresh_cols = range(N - shift, N)          # 전진한 만큼 오른쪽에서 들어온 열
+        confirmed = {(r, c) for (r, c) in now
+                     if (r, c) in expected or c in fresh_cols}
 
         # 다음 사이클을 위해 **거른 뒤가 아니라 검출된 그대로**를 기억한다.
-        # 그래야 이번에 처음 보인 진짜 칩이 다음 사이클에 인정받는다.
+        # 그래야 이번에 놓쳤다 다시 보인 진짜 칩이 다음 사이클에 인정받는다.
         self._prev_goals = now
         self._scrolls_since = 0
 
@@ -476,8 +490,8 @@ class ExploreEngine:
             if scene.cells[r][c] == Kind.GOAL:
                 scene.cells[r][c] = Kind.EMPTY
         scene.notes.append(
-            f"한 번만 보인 칩 {sorted(dropped)} 은(는) 획득 이펙트일 수 있어 "
-            f"이번에는 목표로 삼지 않습니다.")
+            f"칩 {sorted(dropped)} 은(는) 새 열이 아닌 곳에 갑자기 생겼습니다. "
+            f"획득 이펙트로 보고 목표에서 뺍니다 (이번 전진 {shift}칸).")
 
     # ------------------------------------------------- 아이템 개수 모니터링
     def _update_counts(self, img: np.ndarray) -> None:
