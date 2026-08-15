@@ -10,7 +10,7 @@ GUI 제목 표시줄, 로그 첫 줄, `--version` 이 모두 이 값을 읽는�
     3. git tag -a vX.Y.Z
 """
 
-__version__ = "1.2.1"
+__version__ = "1.2.2"
 
 
 def version_line() -> str:
