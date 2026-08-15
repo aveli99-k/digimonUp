@@ -32,7 +32,8 @@ import counters
 import overlay
 from common import is_stop_key_pressed, vk_of
 from board import Grid, N, detect_board
-from emulator_window import EmulatorWindow, capture_client, enumerate_candidates
+from emulator_window import (EmulatorWindow, capture_client,
+                             enable_dpi_awareness, enumerate_candidates)
 from pathfind import PlanKind, plan_route
 from recognize import (Kind, Scene, TemplateSet, analyze, find_blocked_toast,
                        find_green_button, find_top_tab, hsv_of, load_templates,
@@ -80,6 +81,12 @@ class ExploreConfig:
     # 탐사에는 종착점이 없지만, 판에 나오는 주황칩은 반드시 먹어야 한다.
     # 그래서 주황 카드를 목적지로 취급해 1순위로 가져간다.
     orange_goal_without_template: bool = True
+
+    # 판 위의 아이템 들르기
+    # 칩이 없을 때, 전진 경로에서 벗어나 있는 아이템을 이 칸수까지는 들러서 먹는다.
+    # 0 이면 목표로 삼지 않는다(가는 길에 걸리면 여전히 먹는다).
+    # 걸음수 아이템은 들르지 않는다(pathfind.DETOUR_SKIP_KINDS).
+    item_max_detour: int = 2
 
     # 아이템 개수 (왼쪽 아래 걸음수 / 부수기 / 돌진)
     # 개수를 읽어서 **0 이면 아예 시도하지 않는다.** 예전에는 해 보고 안내문이
@@ -648,6 +655,16 @@ class ExploreEngine:
         # 없던 일이 돼 버린다. 새로 시작할 때는 엔진 인스턴스를 새로 만든다.
         self.stats = ExploreStats()
 
+        # DPI 인식은 프로세스마다 한 번만 켜면 되고 여러 번 불러도 문제없다.
+        # 부르는 쪽(launcher/gui)이 이미 켰겠지만 여기서도 켠다.
+        #
+        # 안 켜면 창 크기가 논리 픽셀로 보고돼 모든 좌표가 어긋난다
+        # (실측: 709x1260 창이 567x1008 = 정확히 80% 로 보고됨). 그러면 격자를
+        # 반쪽에서 찾고, 클릭이 엉뚱한 칸으로 가고, 없는 칩이 보이고, 좌우로
+        # 왔다갔다 하다가 이동에 계속 실패한다. 그런데 **화면은 멀쩡해 보여서**
+        # 원인을 찾기가 매우 어렵다. 실제로 이걸로 한참 헤맸다.
+        enable_dpi_awareness()
+
         loaded = {k: len(v.images) for k, v in self.templates.items() if v.images}
         self.log(f"[템플릿] {loaded if loaded else '없음 (색 기반 인식으로 동작)'}")
 
@@ -697,7 +714,7 @@ class ExploreEngine:
                                 self.cfg.orange_goal_without_template)
 
                 # --- 2) 전체 경로 계산 --------------------------------
-                plan = plan_route(scene)
+                plan = plan_route(scene, self.cfg.item_max_detour)
 
                 # 분석이 끝난 지금 다시 정지를 확인한다. 분석 도중에 정지를 눌렀다면
                 # 여기서 빠져나가므로 이전 경로가 뒤늦게 실행되지 않는다.

@@ -446,3 +446,87 @@ def test_아이템이_없으면_예전과_같다():
     ])
     assert plan.kind == PlanKind.GOAL
     assert len(plan.path) - 1 == 4
+
+
+# ------------------- 아이템 들르기 (걸음수는 제외) — 실측 회귀
+def _plan_with_kinds(rows, kinds, **kw):
+    sym = {".": Kind.EMPTY, "P": Kind.PLAYER, "G": Kind.GOAL,
+           "X": Kind.OBSTACLE, "i": Kind.ITEM}
+    cells = [[sym[ch] for ch in row] for row in rows]
+    player = None
+    for r in range(5):
+        for c in range(5):
+            if rows[r][c] == "P":
+                player = Detection(Kind.PLAYER, r, c, 1.0)
+    scene = Scene(grid=None, cells=cells, player=player, goals=[],
+                  item_kinds=kinds)
+    return plan_route(scene, **kw)
+
+
+def test_전진_경로에서_벗어난_아이템은_들른다():
+    """실측 회귀: 아이템이 2칸 거리에 있는데 전진 경로에 안 걸려서 그냥 지나쳤다."""
+    plan = _plan_with_kinds([
+        ".....",
+        ".....",
+        "..i..",       # 돌진 아이템. 전진 경로(3행)에서 벗어나 있다
+        ".P...",
+        ".....",
+    ], {(2, 2): "dash"})
+    assert plan.kind == PlanKind.ITEM
+    assert plan.path[-1] == (2, 2)
+
+
+def test_걸음수_아이템은_들르지_않는다():
+    """걸음수는 이동에 쓰는 자원이다. 그걸 얻으려고 이동하면 본전이거나 손해다."""
+    plan = _plan_with_kinds([
+        ".....",
+        ".....",
+        "..i..",
+        ".P...",
+        ".....",
+    ], {(2, 2): "steps"})
+    assert plan.kind == PlanKind.RIGHT_EDGE, f"걸음수를 먹으러 갔습니다: {plan.describe()}"
+
+
+def test_걸음수도_가는_길에_있으면_먹는다():
+    """들르지 않을 뿐, 공짜로 얻어지는 것까지 피하지는 않는다."""
+    plan = _plan_with_kinds([
+        ".....",
+        ".Pi..",       # 오른쪽 전진 경로 위에 걸음수가 놓여 있다
+        ".....",
+        ".....",
+        ".....",
+    ], {(1, 2): "steps"})
+    assert (1, 2) in plan.path
+
+
+def test_이미_전진_경로_위의_아이템이면_거기서_멈추지_않는다():
+    """지나가며 먹고 더 나아가는 편이 낫다."""
+    plan = _plan_with_kinds([
+        ".....",
+        ".Pi..",
+        ".....",
+        ".....",
+        ".....",
+    ], {(1, 2): "dash"})
+    assert plan.kind == PlanKind.RIGHT_EDGE
+    assert plan.path[-1][1] == 4, f"아이템 칸에서 멈췄습니다: {plan.path}"
+    assert (1, 2) in plan.path
+
+
+def test_아이템_들르기를_끌_수_있다():
+    plan = _plan_with_kinds([
+        ".....", ".....", "..i..", ".P...", ".....",
+    ], {(2, 2): "dash"}, item_max_detour=0)
+    assert plan.kind == PlanKind.RIGHT_EDGE
+
+
+def test_멀리_있는_아이템은_들르지_않는다():
+    plan = _plan_with_kinds([
+        "....i",       # 4칸 거리
+        ".....",
+        ".....",
+        ".P...",
+        ".....",
+    ], {(0, 4): "dash"}, item_max_detour=2)
+    assert plan.kind == PlanKind.RIGHT_EDGE

@@ -59,6 +59,9 @@ class Detection:
     # 플레이어일 때만 채워지는 실제 스프라이트 픽셀 마스크.
     # 이웃 칸의 칩/아이템을 셀 때 플레이어 몸을 빼는 데 쓴다.
     sprite: np.ndarray | None = None
+    # 아이템일 때 그 종류 ("steps" / "break" / "dash"). 모르면 빈 문자열.
+    # 템플릿 파일 이름 item_<종류>.png 에서 읽는다.
+    item_kind: str = ""
 
 
 @dataclass
@@ -72,6 +75,9 @@ class Scene:
     detections: list[Detection] = field(default_factory=list)
     highlights: list[tuple[int, int]] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    # (행, 열) -> 아이템 종류. 경로 계산에서 '걸음수는 들르지 않는다' 같은
+    # 판단에 쓴다. 종류를 모르는 아이템은 빈 문자열이다.
+    item_kinds: dict[tuple[int, int], str] = field(default_factory=dict)
 
     def kind_at(self, row: int, col: int) -> Kind:
         return self.cells[row][col]
@@ -574,6 +580,17 @@ OBSTACLE_FRAC = 0.32
 OBSTACLE_FRAC_WEAK = 0.18     # 가려졌을 때를 위한 완화 기준
 ITEM_WARM_FRAC = 0.10
 ITEM_TEMPLATE_MIN = 0.78
+
+
+def item_kind_of(label: str) -> str:
+    """템플릿 파일 이름에서 아이템 종류를 읽는다.
+
+    item_steps.png -> "steps",  item_break.png -> "break",  item_dash.png -> "dash"
+    규칙에 안 맞는 이름이면 빈 문자열(종류 모름)이다.
+    """
+    name = os.path.splitext(os.path.basename(label))[0]
+    name = name.replace("(반전)", "")
+    return name[5:] if name.startswith("item_") else ""
 # 아이템 아이콘도 셀 높이에 맞춰 정규화하지 않는다(위 GOAL_SCALES 와 같은 이유).
 ITEM_SCALES = (0.6, 0.75, 0.9, 1.0, 1.15, 1.35)
 GOAL_TEMPLATE_MIN = 0.62
@@ -704,7 +721,8 @@ def analyze(img: np.ndarray, grid: Grid, tpl: dict[str, TemplateSet],
                 if score >= ITEM_TEMPLATE_MIN:
                     item_by_template[(r, c)] = Detection(
                         Kind.ITEM, r, c, score, grid.cell_rect(r, c),
-                        f"템플릿 {label} {score:.2f}")
+                        f"템플릿 {label} {score:.2f}",
+                        item_kind=item_kind_of(label))
 
     goals: list[Detection] = []
     if tpl["goal"]:
@@ -792,7 +810,9 @@ def analyze(img: np.ndarray, grid: Grid, tpl: dict[str, TemplateSet],
         detections.append(player)
 
     return Scene(grid=grid, cells=cells, player=player, goal=goal, goals=goals,
-                 detections=detections, highlights=highlights, notes=notes)
+                 detections=detections, highlights=highlights, notes=notes,
+                 item_kinds={(d.row, d.col): d.item_kind
+                             for d in detections if d.kind is Kind.ITEM})
 
 
 # --------------------------------------------------------------------------

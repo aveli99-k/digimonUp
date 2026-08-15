@@ -6,11 +6,17 @@
 
 플레이어는 상하좌우로 한 칸씩만 움직인다. 우선순위는 다음과 같다.
 
-  1순위  목적지가 인식되면 그리로 가는 장애물 없는 최단 경로
-         (탐사에는 보통 목적지가 없다. 템플릿을 넣었을 때만 동작한다.)
-  2순위  **도달 가능한 가장 오른쪽 칸**까지 가는 장애물 없는 최단 경로
-  3순위  오른쪽으로 한 칸도 못 갈 때, 세로로 최대한 움직여 새 행을 불러온다
-  4순위  오른쪽으로도 세로로도 갈 데가 없을 때만 장애물 클릭
+  1순위  주황칩까지 가는 장애물 없는 최단 경로 (칩이 걸음수보다 중요하다)
+  2순위  전진 경로에서 벗어나 있는 **바로 근처(기본 2칸)** 의 부수기/돌진 아이템
+         (걸음수 아이템은 들르지 않는다. 이동에 쓰는 자원을 얻자고 이동하는 셈이라
+          본전이거나 손해다. 다만 가는 길에 걸리면 여전히 먹는다.)
+  3순위  **도달 가능한 가장 오른쪽 칸**까지 가는 장애물 없는 최단 경로
+  4순위  오른쪽으로 한 칸도 못 갈 때, 세로로 최대한 움직여 새 행을 불러온다
+  5순위  오른쪽으로도 세로로도 갈 데가 없을 때만 장애물 클릭
+
+어느 경로든 **같은 길이의 갈래가 여럿이면 아이템을 밟는 쪽**을 고른다(_bfs).
+거리는 절대 늘리지 않으므로, 아이템 때문에 돌아가는 일은 2순위에서만 일어나고
+그것도 2칸까지다.
 
 2순위가 '오른쪽 끝 열(col 4)'이 아니라 '도달 가능한 가장 오른쪽 칸'인 것이 중요하다.
 지금 보이는 5x5 안에서 맨 오른쪽 열에 못 닿아도 막힌 것이 아니다. 오른쪽으로 한 칸만
@@ -41,6 +47,7 @@ DIRS: list[tuple[str, int, int]] = [
 
 class PlanKind(str, Enum):
     GOAL = "목적지"
+    ITEM = "근처 아이템"
     RIGHT_EDGE = "오른쪽 전진"
     SCROLL_VERTICAL = "세로 이동으로 새 지형"
     BREAK_OBSTACLE = "장애물 파괴"
@@ -81,6 +88,13 @@ def passable(kind: Kind) -> bool:
 # 칩을 크게 잡은 이유는 칩이 걸음수보다 중요하기 때문이다. 목표로 가는 길에
 # 다른 칩이 놓여 있으면 그 길로 간다.
 PICKUP_VALUE = {Kind.GOAL: 4, Kind.ITEM: 1}
+
+# 이 종류의 아이템은 **들르지 않는다**(가는 길에 걸리면 여전히 먹는다).
+#
+# 걸음수 아이템은 이동에 쓰는 자원 그 자체다. 그걸 얻으려고 걸음수를 쓰는 것은
+# 앞뒤가 맞지 않는다. 두 칸 걸어가서 걸음수를 얻으면 본전이거나 손해다.
+# 반면 부수기·돌진은 걸음수로는 살 수 없는 것이라 조금 돌아갈 값어치가 있다.
+DETOUR_SKIP_KINDS = {"steps"}
 
 
 def _bfs(cells: list[list[Kind]], start: Cell) -> tuple[dict[Cell, int], dict[Cell, Cell]]:
@@ -167,8 +181,13 @@ def horizontal_triple_members(cells: list[list[Kind]]) -> set[Cell]:
             for i in range(3)}
 
 
-def plan_route(scene: Scene) -> Plan:
-    """장면을 보고 다음에 무엇을 할지 정한다."""
+def plan_route(scene: Scene, item_max_detour: int = 2) -> Plan:
+    """장면을 보고 다음에 무엇을 할지 정한다.
+
+    item_max_detour
+        칩이 없을 때, 이 칸수 안에 있는 아이템은 들러서 먹는다.
+        0 이면 아이템을 목표로 삼지 않는다(가는 길에 걸리면 여전히 먹는다).
+    """
     if scene.player is None:
         return Plan(PlanKind.NONE, [], None, "플레이어를 찾지 못했습니다.")
 
@@ -191,13 +210,15 @@ def plan_route(scene: Scene) -> Plan:
                     f"주황칩까지 장애물 없는 최단 경로 {dist[goal]}칸{extra}")
     # 칩이 없거나 전부 막혀 있으면 오른쪽 전진 규칙으로 내려간다.
 
-    # --- 2순위: 오른쪽으로 갈 수 있는 데까지 --------------------------------
+    # --- 2순위 / 3순위 -----------------------------------------------------
+    # 먼저 '오른쪽 전진' 경로를 계산해 둔다. 근처 아이템이 **이미 그 경로 위에**
+    # 있으면 따로 들를 이유가 없다. 지나가면서 먹고 더 나아가는 편이 낫다.
+    #
     # 탐사는 오른쪽으로 무한히 나아가는 미니게임이고, 한 칸 이동할 때마다
     # 게임판이 밀리면서 **새 열이 하나 들어온다**. 그래서 지금 보이는 5x5 안에서
-    # 맨 오른쪽 열(col 4)에 못 닿는다고 막힌 것이 아니다. 갈 수 있는 만큼만
-    # 오른쪽으로 가면 새 지형이 나타나 길이 이어진다.
-    #
+    # 맨 오른쪽 열(col 4)에 못 닿는다고 막힌 것이 아니다.
     # 따라서 목표는 '오른쪽 끝 열'이 아니라 **도달 가능한 가장 오른쪽 칸**이다.
+    right_plan: Plan | None = None
     reachable = [cell for cell in dist if cell != start]
     if reachable:
         # 더 오른쪽 > 더 가까움 > 원래 행에 가까움 순으로 고른다.
@@ -208,9 +229,38 @@ def plan_route(scene: Scene) -> Plan:
                       f"(도달 가능한 가장 오른쪽 칸까지 {dist[best]}칸)")
             if best[1] < N - 1:
                 reason += " (한 칸 가면 새 열이 들어온다)"
-            return Plan(PlanKind.RIGHT_EDGE, _rebuild(prev, start, best), best, reason)
+            right_plan = Plan(PlanKind.RIGHT_EDGE,
+                              _rebuild(prev, start, best), best, reason)
 
-    # --- 3순위: 세로로 움직여 새 지형을 불러온다 ----------------------------
+    # --- 2순위: 전진 경로에서 벗어나 있는 바로 근처의 아이템 -----------------
+    # 걸음수/부수기/돌진 아이템은 밟으면 그냥 얻어진다. 그런데 '가는 길에 있으면
+    # 줍는다'(경로 동점 처리)만으로는 **한 칸 옆에 있어도 그냥 지나친다.**
+    # 실측: 아이템이 2칸, 4칸 거리에 있는데 전진 경로에 안 걸려서 둘 다 못 먹었다.
+    #
+    # 그래서 **아주 가까운 것만** 목표로 삼는다. 멀리 있는 것을 쫓아가면 전진이
+    # 느려지므로 item_max_detour 칸까지만 본다. 장애물은 여전히 부수지 않는다
+    # (BFS 가 장애물을 통과하지 않으므로 자동으로 지켜진다).
+    if item_max_detour > 0:
+        on_the_way = set(right_plan.path) if right_plan else set()
+        kinds = scene.item_kinds
+        near = [(r, c) for r in range(N) for c in range(N)
+                if cells[r][c] == Kind.ITEM and (r, c) in dist
+                and (r, c) != start and dist[(r, c)] <= item_max_detour
+                and (r, c) not in on_the_way
+                and kinds.get((r, c), "") not in DETOUR_SKIP_KINDS]
+        if near:
+            # 가깝고, 같으면 더 오른쪽(전진 방향)에 있는 것부터
+            target = min(near, key=lambda c: (dist[c], -c[1]))
+            kind = kinds.get(target, "") or "아이템"
+            return Plan(PlanKind.ITEM, _rebuild(prev, start, target), target,
+                        f"전진 경로에서 벗어난 {kind} 까지 {dist[target]}칸 "
+                        f"(최대 {item_max_detour}칸까지만 들른다)")
+
+    # --- 3순위: 오른쪽으로 갈 수 있는 데까지 --------------------------------
+    if right_plan is not None:
+        return right_plan
+
+    # --- 4순위: 세로로 움직여 새 지형을 불러온다 ----------------------------
     # 오른쪽으로 한 칸도 못 가는 '주머니'에 갇힌 경우다. 세로 이동에서도 게임판이
     # 스크롤하면서 **새 행이 들어오므로**, 위아래로 최대한 움직이면 오른쪽으로
     # 이어지는 길이 새로 나타날 수 있다. 장애물을 부수는 것보다 이쪽이 먼저다.
@@ -222,7 +272,7 @@ def plan_route(scene: Scene) -> Plan:
                     f"오른쪽으로 갈 길이 없어 세로로 {abs(best[0] - start[0])}칸 이동 "
                     f"(새 행이 들어오면 길이 열린다)")
 
-    # --- 4순위: 장애물 파괴 ----------------------------------------------
+    # --- 5순위: 장애물 파괴 ----------------------------------------------
     # 오른쪽으로도 세로로도 갈 데가 없는, 완전히 갇힌 경우다.
     middles = horizontal_triples(cells)
     members = horizontal_triple_members(cells)
