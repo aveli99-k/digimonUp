@@ -48,6 +48,7 @@ from digimonup.vision.recognize import (Detection, Kind, Scene, TemplateSet, ana
                        mask_highlight, mask_obstacle, motion_report,
                        track_player_fast, _frac)
 from digimonup.vision.recognize import MOTION_CELL_MIN, MOTION_MAX_CELLS
+from digimonup.vision.recognize import OBSTACLE_FRAC_WEAK
 
 from digimonup.base.paths import DEBUG_DIR
 
@@ -91,7 +92,9 @@ class ExploreConfig:
     # 장애물을 부순 뒤, 그 자리를 다시 읽기 전에 기다리는 시간. 부서지는 연출이
     # 끝나고 아래에 있던 칩·아이템이 드러날 때까지다. 실측으로 0.45초면 충분했다
     # (61.3초에 (4,2) 를 부수고 그 뒤 첫 인식에서 드러난 칩을 바로 찾았다).
-    break_settle_sec: float = 0.45
+    # 장애물을 누른 뒤 **부서진 것을 확인할 때까지** 기다리는 최대 시간.
+    # 이 게임은 화면 반영이 느리다. 실측 176.3초에 2.2초가 걸렸다.
+    break_confirm_sec: float = 3.0
 
     cycle_pause_sec: float = 0.25      # 전체 재인식 사이의 쉬는 시간
     lost_retry_sec: float = 0.8        # 인식 실패 시 재시도 간격
@@ -217,6 +220,12 @@ class ExploreEngine:
         self.break_disabled = not self.cfg.allow_obstacle_break
         # 막힌 주머니에서 제자리를 맴도는 것을 잡아내기 위한 상태
         self._last_layout: tuple | None = None
+        # 직전 이동으로 알아낸 플레이어 자리. 인식이 말이 되는지 대조한다.
+        self._expect: tuple | None = None
+        # 한 번 다시 본 자리. 두 번째도 같으면 인식을 믿는다.
+        self._recheck: tuple | None = None
+        # 지금 배치에서 이미 서 봤던 자리들 (맴도는지 가르는 데 쓴다)
+        self._seen_spots: set = set()
         self.stuck_cycles = 0
         # 고정된 격자. 게임판 패널은 화면에서 움직이지 않고 내용만 스크롤한다.
         self.locked_grid: Grid | None = None
@@ -596,7 +605,24 @@ class ExploreEngine:
         # 계획해 놓고 P(4,4) 에서 27초 동안 11사이클을 한 발짝도 못 갔다.)
         # 갈 곳이 분명하면 갇힌 게 아니므로 그냥 가면 된다.
         worth_going = plan.kind in (PlanKind.GOAL, PlanKind.ITEM)
-        if layout == self._last_layout and not worth_going:
+        # **같은 배치에서 가 본 자리로 또 가고 있으면** 그때가 맴도는 것이다.
+        #
+        # 배치가 그대로라는 것만으로는 부족하다. 전진할 수 있는 행까지 걸어서
+        # 올라가는 동안에도 배치는 그대로다. 실측 170.8~178.3초: (3,1) 에서
+        # 1행까지 네 칸을 걸어 올라가는 중이었는데 — 매 사이클 이동에
+        # **성공**하고 있었는데 — 갇힘으로 세어 3사이클 만에 초록 버튼을 눌러
+        # 돌진 하나를 태웠다(2 -> 1). 그때 계획은 '오른쪽 전진'이었다.
+        #
+        # 새 자리로 가고 있으면 나아가는 중이고, 왔던 자리로 되돌아가면 맴도는
+        # 것이다. 예전에 잡았던 (1,0)->(1,1)->(2,1)->(1,1) 무한 왕복은 이
+        # 기준으로도 그대로 걸린다.
+        here = (scene.player.row, scene.player.col) if scene.player else None
+        if layout != self._last_layout:
+            self._seen_spots = set()
+        looping = here is not None and here in self._seen_spots
+        if here is not None:
+            self._seen_spots.add(here)
+        if layout == self._last_layout and looping and not worth_going:
             self.stuck_cycles += 1
         else:
             self.stuck_cycles = 0
@@ -713,6 +739,60 @@ class ExploreEngine:
             self._last_layout = None
             return True
         return False
+
+    def _odd_position(self, here: tuple[int, int]) -> str:
+        """이 자리가 말이 되는가. 이상하면 **왜 이상한지**를, 괜찮으면 빈 글자를.
+
+        1) 플레이어는 0~1열에만 있다(19장). 2열로 잡혔다면 판이 밀리는 도중을
+           찍은 것이다. 예전에는 그 자리를 곧이곧대로 믿고 **왼쪽으로 되돌리는
+           이동**을 계획했다. 게임은 당연히 거부했고, 실측 209.4초·233.2초에
+           2.1초씩 버렸다.
+
+        2) 직전 이동이 성공했다면 지금 어디 있어야 하는지 정확히 안다. 전진이면
+           판이 밀려 화면상 제자리이고, 아니면 누른 칸이다. 실측 세 판
+           353사이클에서 이 예측은 347번 맞았고, 어긋난 여섯 번 중 넷이
+           **인식 쪽이 틀린 것**이었다(44.4초·233.2초는 한 행 위로 읽었고,
+           207.2초·230.9초는 2열로 읽었다).
+        """
+        if here[1] > PLAYER_MAX_COL:
+            return f"{here[1]}열은 플레이어가 설 수 없는 자리입니다"
+        if self._expect is not None and here != self._expect:
+            return f"직전 이동으로 보면 {self._expect} 에 있어야 합니다"
+        return ""
+
+    def _wait_broken(self, grid: Grid, cell: tuple[int, int]):
+        """장애물을 누른 뒤, 그 칸에서 장애물이 사라질 때까지 본다.
+
+        반환: (마지막으로 찍은 화면, 부서졌는지)
+
+        칸 하나의 보라색 비율만 보므로 판 전체를 다시 인식하는 것(0.37초)보다
+        훨씬 싸다. 인식 기준은 판 인식과 같은 값을 쓴다.
+
+        왜 시간이 아니라 결과를 기다리나 (실측 176.3초)
+            파괴는 성공했는데 2.2초 뒤 재인식에서도 그 칸이 장애물로 보였다.
+            하단 부수기 개수도 56 그대로였다(저장된 화면을 다시 읽어 확인).
+            그래서 같은 칸을 또 눌렀는데, 그때는 이미 빈칸이라 그 클릭이
+            **이동**이 됐다 — 걸음수 1223 -> 1222, 부수기는 안 줄었다.
+            2.3초 사이에 같은 자리를 두 번 두드린 셈이다.
+        """
+        rect = grid.cell_rect(cell[0], cell[1])
+        deadline = time.time() + self.cfg.break_confirm_sec
+        shot = None
+        while True:
+            self._check_stop()
+            shot = self._capture()
+            if shot is not None:
+                frac = _frac(mask_obstacle(shot), rect)
+                if frac < OBSTACLE_FRAC_WEAK:
+                    self.log(f"[장애물] {cell} 가 부서진 것을 확인했습니다 "
+                             f"(보라색 {frac:.2f}).")
+                    return shot, True
+                # 안내문이 떴다면 부술 수 없는 것이다. 더 기다릴 이유가 없다.
+                if self._toast_visible(shot):
+                    return shot, False
+            if time.time() >= deadline:
+                return shot, False
+            self._sleep(self.cfg.poll_interval_sec)
 
     def _plan(self, scene: Scene):
         """경로를 세운다. **길이 있으면 아이템을 쓰지 않는다.**
@@ -967,9 +1047,13 @@ class ExploreEngine:
         if screen is None:
             return False
         self.stats.green_button_uses += 1
-        self.log(f"[초록버튼] 장애물 부수기 (누적 {self.stats.green_button_uses}회) "
+        # 이 버튼은 **돌진**이다(29장). 예전 로그는 '장애물 부수기'라고 적었는데,
+        # 실제로 줄어드는 것은 돌진 아이템이라 기록만 보면 원인을 못 찾는다.
+        self.log(f"[초록버튼] 돌진 (누적 {self.stats.green_button_uses}회, 남은 돌진 "
+                 f"{self.counts.dash if self.counts.dash is not None else '?'}) "
                  f"| 클라이언트{pos} -> 화면{screen}")
         self._sleep(0.6)
+        self._expect = None       # 세 칸 나아갔다. 어디인지 다시 봐야 안다
         return True
 
     # ------------------------------------------------- 가벼운 플레이어 추적
@@ -1431,6 +1515,37 @@ class ExploreEngine:
                     self._sleep(self.cfg.lost_retry_sec)
                     continue
 
+                here = (scene.player.row, scene.player.col)
+                # **말이 되는 자리인가.** 두 가지로 본다.
+                #
+                # 1) 플레이어는 0~1열에만 있다(19장). 2열로 잡혔다면 판이 밀리는
+                #    도중을 찍은 것이다. 예전에는 그 자리를 곧이곧대로 믿고
+                #    **왼쪽으로 되돌리는 이동**을 계획했다. 게임은 당연히
+                #    거부했고, 실측 209.4초·233.2초에 2.1초씩 버렸다.
+                #
+                # 2) 직전 이동이 성공했다면 지금 어디 있어야 하는지 정확히 안다.
+                #    실측 세 판(총 353사이클)에서 이 예측은 347번 맞았고,
+                #    어긋난 여섯 번 중 넷이 **인식 쪽이 틀린 것**이었다
+                #    (44.4초·233.2초는 한 행 위로, 207.2초·230.9초는 2열로).
+                #
+                # 한 번 더 보고도 같으면 그때는 인식을 믿는다. 게임이 우리가
+                # 모르는 이유로 플레이어를 옮겼을 수도 있기 때문이다.
+                odd = self._odd_position(here)
+                if odd and self._recheck != here:
+                    self._recheck = here
+                    lost += 1
+                    # 이 사이클은 **버린 것**이다. 바로 위에서 남긴 cycle 기록을
+                    # 나중에 분석할 때 진짜 판단으로 세면 안 되므로 표시해 둔다.
+                    self.trace.write("reject", at=list(here), why=odd)
+                    self.log(f"[인식] 플레이어를 {here} 로 읽었는데 {odd}. "
+                             f"다시 봅니다.")
+                    self._sleep(self.cfg.lost_retry_sec)
+                    continue
+                if odd:
+                    self.log(f"[인식] 두 번 봐도 {here} 입니다. 그대로 받아들입니다.")
+                    self._expect = None
+                self._recheck = None
+
                 lost = 0
                 self.stats.cycles += 1
                 self.log(f"[인식] 판:\n{scene.summary()}")
@@ -1474,13 +1589,20 @@ class ExploreEngine:
                                          left=self.counts.break_)
                         self.log(f"[클릭] 장애물 파괴 시도 {nxt} | 클라이언트({cx},{cy}) -> "
                                  f"화면{screen}")
-                        # 부서지는 연출이 끝나고 **그 아래에 있던 것이 드러날
-                        # 때까지** 기다린다. 실측 66.7초: (4,2) 를 부수니 그
-                        # 자리에서 칩이 나왔다.
-                        self._sleep(self.cfg.break_settle_sec)
+                        # **부서진 것을 눈으로 확인할 때까지 기다린다.**
+                        #
+                        # 예전에는 정해진 시간만 자고 끝냈다. 그런데 이 게임은
+                        # 화면 반영이 느리다. 실측 176.3초: 파괴는 성공했는데
+                        # 2.2초 뒤 재인식에서도 그 칸이 여전히 장애물로 보였고
+                        # (하단 개수도 56 그대로였다), 그래서 같은 칸을 또 눌렀다.
+                        # 그때는 이미 빈칸이라 그 클릭이 **이동**이 돼 버렸다
+                        # (걸음수 1223 -> 1222, 부수기는 그대로).
+                        #
+                        # 그러니 시간이 아니라 **결과**를 기다린다. 이동에 이미
+                        # 쓰고 있는 방식 그대로다(24장).
+                        shot, broke = self._wait_broken(grid, nxt)
                         # 안내문이 떴다면 이 장애물은 부술 수 없는 것이다.
-                        shot = self._capture()
-                        if shot is not None and self._toast_visible(shot):
+                        if not broke and shot is not None and self._toast_visible(shot):
                             self.break_fail_streak += 1
                             self.log(f"[장애물] 파괴가 통하지 않았습니다 "
                                      f"({self.break_fail_streak}/"
@@ -1509,8 +1631,12 @@ class ExploreEngine:
                                      to=list(nxt), ok=bool(ok), scrolled=bool(scrolled),
                                      secs=round(time.time() - _t0, 2))
                     if not ok:
+                        self._expect = None       # 어디 있는지 모른다
                         break     # 고속 경로 폐기 -> 바깥 루프에서 전체 재인식
                     current = nxt
+                    # **이동에 성공했으니 플레이어가 어디 있는지 정확히 안다.**
+                    # 전진(스크롤)이면 판이 밀려 화면상 제자리에 남는다(19장).
+                    self._expect = (current[0], PLAYER_MAX_COL) if scrolled else nxt
                     self.break_fail_streak = 0   # 길이 열렸다면 다시 시도해 볼 만하다
                     if self._path_dirty and not scrolled:
                         # 이동은 했는데 무슨 일인지 확실치 않다. 남은 경로만 버린다.

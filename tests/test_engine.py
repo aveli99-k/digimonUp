@@ -62,7 +62,10 @@ def _engine(frames, **cfg_kw):
     # 합성 화면은 정지 이미지라 움직임으로 플레이어를 찾을 수 없다. 촬영에
     # 시간만 쓰므로 끈다(motion_frames < 2 면 건너뛴다).
     defaults = dict(move_timeout_sec=0.5, poll_interval_sec=0.0,
-                    click_settle_sec=0.0, save_debug=False, motion_frames=1)
+                    click_settle_sec=0.0, save_debug=False, motion_frames=1,
+                    # 합성 화면은 클릭해도 안 바뀌므로, 파괴 확인이 늘 최대
+                    # 시간을 다 쓴다. 실제 값(3.0초)은 여기서 의미가 없다.
+                    break_confirm_sec=0.2)
     defaults.update(cfg_kw)
     cfg = ExploreConfig(**defaults)
     eng = ExploreEngine(cfg, log=lambda *_: None)
@@ -482,6 +485,91 @@ POCKET = [
     "XX...",
     ".X...",
 ]
+
+
+def test_직전_이동과_어긋나는_위치는_이상하다고_본다():
+    """실측 회귀(44.4초·233.2초): **플레이어를 한 행 위로 읽어 위치가 튀었다.**
+
+    직전 이동이 성공했다면 지금 어디 있어야 하는지 정확히 안다. 전진이면 판이
+    밀려 화면상 제자리이고, 아니면 누른 칸이다. 세 판 353사이클에서 이 예측은
+    347번 맞았고, 어긋난 여섯 번 중 넷이 인식 쪽이 틀린 것이었다.
+    """
+    eng = _engine([])
+    eng._expect = (1, 1)
+    assert eng._odd_position((1, 1)) == "", "맞는 자리를 이상하다고 했습니다"
+    assert eng._odd_position((0, 1)), "한 행 위로 읽었는데 그냥 넘어갔습니다"
+
+    # 어디 있는지 모를 때는 트집 잡지 않는다
+    eng._expect = None
+    assert eng._odd_position((0, 1)) == ""
+
+
+def test_2열_플레이어는_이상하다고_본다():
+    """플레이어는 0~1열에만 있다(19장). 2열은 판이 밀리는 중을 찍은 것이다.
+
+    실측 209.4초·233.2초: 그 자리를 믿고 **왼쪽으로 되돌리는 이동**을 계획했다.
+    게임이 거부해 안내문이 떴고 2.1초씩 버렸다.
+    """
+    eng = _engine([])
+    eng._expect = None
+    assert eng._odd_position((0, 2)), "2열을 그대로 받아들였습니다"
+    assert eng._odd_position((0, 1)) == ""
+
+
+
+def test_초록버튼은_돌진이라_위치를_다시_봐야_한다():
+    """초록 버튼은 세 칸 나아가는 돌진이다(29장). 누른 뒤 자리를 확신할 수 없다."""
+    eng = _engine([])
+    eng.counts = Counters(steps=100, break_=10, dash=5)
+    eng._expect = (2, 1)
+    eng._capture = lambda: None       # 버튼을 못 찾게 해서 클릭은 막는다
+    eng._press_green_button()
+    # 클릭까지 못 갔으면 그대로여야 한다(여기서 확인하는 것은 초기값 보존)
+    assert eng._expect == (2, 1)
+
+
+
+def test_전진할_행까지_걸어가는_중을_갇힘으로_보지_않는다():
+    """실측 회귀(170.8~178.3초): **걸어 올라가는 중을 갇힘으로 세어 돌진을 태웠다.**
+
+    (3,1) 에서 1행까지 네 칸을 걸어 올라가는 동안 매 사이클 이동에 성공하고
+    있었다. 그런데 전진을 안 했으니 장애물 배치는 그대로였고, 그것만 보고
+    갇힘으로 세어 3사이클 만에 초록 버튼을 눌렀다 — 돌진 2 -> 1.
+
+    배치가 그대로여도 **새 자리로 가고 있으면** 나아가는 중이다. 왔던 자리로
+    되돌아갈 때만 맴도는 것이다.
+    """
+    from digimonup.logic.pathfind import Plan, PlanKind as PK
+    eng = _engine([])
+    layout = [
+        ".....",
+        ".....",
+        ".X...",
+        ".PX..",
+        ".X...",
+    ]
+    for spot in ((3, 1), (3, 0), (2, 0), (1, 0), (1, 1)):
+        sc = _board_scene([row.replace("P", ".") for row in layout])
+        from digimonup.vision.recognize import Detection, Kind
+        sc.player = Detection(Kind.PLAYER, spot[0], spot[1], 1.0)
+        plan = Plan(PK.RIGHT_EDGE, [spot, (spot[0], spot[1] + 1)], None, "")
+        eng._handle_blocked(sc, plan)
+    assert eng.stuck_cycles == 0,         f"걸어서 올라가는 중인데 갇힘 {eng.stuck_cycles}회로 셌습니다"
+
+
+def test_같은_자리로_되돌아가면_맴도는_것으로_본다():
+    """실측 회귀: (1,0)->(1,1)->(2,1)->(1,1) 무한 왕복. 이건 갇힌 것이다."""
+    from digimonup.logic.pathfind import Plan, PlanKind as PK
+    from digimonup.vision.recognize import Detection, Kind
+    eng = _engine([])
+    layout = [".....", "P....", ".....", ".....", "....."]
+    for spot in ((1, 0), (1, 1), (2, 1), (1, 1), (1, 0), (1, 1)):
+        sc = _board_scene([row.replace("P", ".") for row in layout])
+        sc.player = Detection(Kind.PLAYER, spot[0], spot[1], 1.0)
+        plan = Plan(PK.RIGHT_EDGE, [spot, (spot[0], spot[1] + 1)], None, "")
+        eng._handle_blocked(sc, plan)
+    assert eng.stuck_cycles >= 2,         f"같은 자리를 오가는데 못 알아챘습니다: {eng.stuck_cycles}"
+
 
 
 def test_갇히면_제자리를_맴돌지_않고_기다린다():
@@ -1023,6 +1111,36 @@ def _board_scene(layout):
             elif cells[r][c] == Kind.GOAL:
                 sc.goals.append(Detection(Kind.GOAL, r, c, 0.9))
     return sc
+
+
+def test_부서진_것을_확인할_때까지_기다린다():
+    """실측 회귀(176.3초): **같은 장애물을 2.3초 사이에 두 번 눌렀다.**
+
+    파괴는 성공했는데 이 게임은 화면 반영이 느리다. 2.2초 뒤 재인식에서도 그
+    칸이 여전히 장애물로 보였고, 저장된 화면을 다시 읽어 보니 하단 부수기
+    개수도 56 그대로였다. 그래서 같은 칸을 또 눌렀는데, 그때는 이미 빈칸이라
+    그 클릭이 **이동**이 됐다 — 걸음수 1223 -> 1222, 부수기는 안 줄었다.
+
+    그러니 정해진 시간을 자고 끝낼 것이 아니라 **부서진 것을 눈으로 확인**할
+    때까지 기다려야 한다.
+    """
+    obstacle = synth.make_board(SCROLL_BASE)
+    g = board.detect_board(obstacle)
+    # 부수려는 칸을 고른다 — 판에서 실제로 장애물인 자리
+    from digimonup.vision.recognize import Kind
+    sc = recognize.analyze(obstacle, g, recognize.load_templates())
+    target = next((r, c) for r in range(5) for c in range(5)
+                  if sc.cells[r][c] == Kind.OBSTACLE)
+
+    eng = _engine([obstacle] * 40, break_confirm_sec=0.3)
+    shot, broke = eng._wait_broken(g, target)
+    assert broke is False, "장애물이 그대로인데 부서졌다고 봤습니다"
+
+    clear = synth.make_board([row.replace("X", ".") for row in SCROLL_BASE])
+    eng2 = _engine([clear] * 40, break_confirm_sec=3.0)
+    _, broke2 = eng2._wait_broken(g, target)
+    assert broke2 is True, "장애물이 사라졌는데 못 알아봤습니다"
+
 
 
 def test_공짜로_갈_수_있으면_부수지_않는다():

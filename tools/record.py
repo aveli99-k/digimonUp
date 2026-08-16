@@ -54,23 +54,27 @@ def main() -> int:
     eng = explore.ExploreEngine(cfg, log=log)
 
     # 사이클마다 오버레이(격자·인식·경로를 그린 그림)를 저장한다.
+    #
+    # **그림을 그리는 그 자리에서 가로챈다.** 예전에는 plan_route 를 가로챘는데,
+    # 그때의 last_overlay 는 아직 **이전 사이클** 것이라 저장된 그림이 한 박자
+    # 밀렸다. 그 밀린 그림을 근거로 판단하다가 실제로 잘못된 결론을 냈다.
+    # 게다가 지금은 경로를 두 번 세우므로(아이템 없이 한 번, 부수며 한 번)
+    # plan_route 가 사이클당 두 번 불려 그림도 두 배로 쌓였다.
     n = [0]
-    real_plan = explore.plan_route
+    real_draw = explore.overlay.draw
 
-    def plan_hook(scene, *a, **kw):
-        plan = real_plan(scene, *a, **kw)
+    def draw_hook(img, grid, scene, path, header, *a, **kw):
+        drawn = real_draw(img, grid, scene, path, header, *a, **kw)
         n[0] += 1
-        first = plan.moves[0] if plan.moves else "-"
-        log(f"[기록] #{n[0]:04d} {plan.describe()}")
+        log(f"[기록] #{n[0]:04d} {header} 경로={path}")
         for note in scene.notes:
             log(f"[기록]        {note}")
-        img = eng.last_overlay if eng.last_overlay is not None else eng.last_frame
-        if img is not None:
-            name = f"{n[0]:04d}_{time.time() - t0:.1f}s_{plan.kind.value}_{first}.png"
-            imgio.imwrite(os.path.join(OUT_DIR, name), img)
-        return plan
+        safe = header.replace("/", "_").replace("\\", "_").replace("|", "_")[:40]
+        name = f"{n[0]:04d}_{time.time() - t0:.1f}s_{safe.strip()}.png"
+        imgio.imwrite(os.path.join(OUT_DIR, name), drawn)
+        return drawn
 
-    explore.plan_route = plan_hook
+    explore.overlay.draw = draw_hook
 
     print(f"{seconds:.0f}초 동안 기록합니다. 저장 위치: {OUT_DIR}")
     print("이상한 동작을 보면 그때가 몇 초쯤이었는지 기억해 두세요.\n")

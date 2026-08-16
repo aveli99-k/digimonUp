@@ -55,7 +55,22 @@ def _reachable_rows(board, start_row):
 
 
 def analyze(rows: list[dict]) -> None:
-    cycles = [r for r in rows if r["kind"] == "cycle"]
+    # **버린 사이클은 빼고 센다.** 플레이어 자리가 말이 안 되면 엔진은 그
+    # 사이클을 통째로 버리고 다시 본다(reject 기록이 바로 뒤에 붙는다).
+    # 그 판을 진짜 판단으로 세면, 엔진이 이미 걸러낸 것을 두고 "칩을 놓쳤다"고
+    # 잘못 세게 된다. 실측 178.3초가 그런 판이었다 — 칩 획득 이펙트가 판을
+    # 뒤덮어 플레이어를 (1,0) 으로 읽었고, 엔진은 그걸 버리고 1.6초 뒤에
+    # (3,1) 로 바로잡았다.
+    cycles = []
+    for k, r in enumerate(rows):
+        if r["kind"] != "cycle":
+            continue
+        if k + 1 < len(rows) and rows[k + 1]["kind"] == "reject":
+            continue
+        cycles.append(r)
+    nrej = sum(1 for r in rows if r["kind"] == "reject")
+    if nrej:
+        print(f"(자리가 말이 안 돼 버린 사이클 {nrej}개는 빼고 셉니다)")
     moves = [r for r in rows if r["kind"] == "move"]
     breaks = [r for r in rows if r["kind"] == "break"]
     dashes = [r for r in rows if r["kind"] == "dash"]
@@ -151,6 +166,41 @@ def analyze(rows: list[dict]) -> None:
           + (f"  ({len(avoidable) / total * 100:.0f}%)" if total else ""))
     for t, ch, pr, _, dist in avoidable[:8]:
         print(f"      {t:6.1f}s  칩{ch}, 나는 {pr}행 (그때 {dist}칸만 움직이면 됐다)")
+
+    # --- 1.5) 유령칩 --------------------------------------------------
+    # 한 사이클에 보였다가 **먹지도 않았는데** 다음 사이클에 사라진 칩.
+    # 정체는 칩 획득 이펙트다 — 먹은 칩이 상단 보유량으로 날아가는 동안 판
+    # 곳곳에 주황 아이콘이 흩어진다(178.3초 화면에서 여섯 칸에 떠 있었다).
+    kept = gone = 0
+    ghosts = []
+    for a, b in zip(cycles, cycles[1:]):
+        if not a.get("player") or not b.get("player"):
+            continue
+        between = [m for m in moves if a["t"] < m["t"] < b["t"]]
+        if any(not m["ok"] for m in between):
+            continue                      # 무슨 일이 있었는지 확실치 않다
+        adv = sum(1 for m in between if m["scrolled"])
+        now = {tuple(c) for c in (b.get("chips") or [])}
+        for r, c in (a.get("chips") or []):
+            nc = c - adv
+            if nc < 0:
+                continue                  # 화면 밖으로 나갔다
+            if nc <= 1 and (r, nc) == tuple(b["player"]):
+                continue                  # 걸어가서 먹은 자리
+            if adv and nc == 1 and r == b["player"][0]:
+                continue                  # 전진하며 먹었다
+            if (r, nc) in now:
+                kept += 1
+            else:
+                gone += 1
+                ghosts.append((a["t"], (r, c), (r, nc), adv))
+    tot = kept + gone
+    print("")
+    print(f"[1.5] 칩이 다음 사이클에도 그대로 {kept} / **사라짐(유령칩) {gone}**"
+          + (f"  ({gone / tot * 100:.0f}%)" if tot else ""))
+    for t, was, exp, adv in ghosts[:6]:
+        print(f"      {t:6.1f}s  칩{was} 이 {exp} 에 없습니다 (그사이 전진 {adv})")
+
 
     # --- 2) 쓸데없이 부쉈는가 -----------------------------------------
     print(f"\n[2] 장애물 파괴 {len(breaks)}회")
