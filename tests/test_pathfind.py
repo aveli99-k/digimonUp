@@ -306,8 +306,27 @@ def test_경로를_방향_목록으로_바꾼다():
     assert plan.moves.count("DOWN") == 2 and plan.moves.count("RIGHT") == 2
 
 
-def test_멀리_있는_칩은_그_행에_서서_전진해_받는다():
-    """2열 이상은 걸어갈 수 없다. 그 행에 서서 전진하면 칩이 걸어 들어온다."""
+def test_코앞의_칩은_그_행으로_옮겨_받는다():
+    """2열 칩은 **이번 전진**에 내 자리로 들어온다. 지금 그 행에 있어야 한다."""
+    scene = make_scene([
+        ".....",
+        ".P...",
+        "..G..",
+        ".....",
+        ".....",
+    ])
+    plan = plan_route(scene)
+    assert plan.kind == PlanKind.GOAL
+    assert plan.path == [(1, 1), (2, 1), (2, 2)],         f"칩이 있는 2행으로 내려가 전진해야 합니다: {plan.path}"
+
+
+def test_먼_칩_때문에_미리_행을_옮기지_않는다():
+    """4열 칩은 **세 번 뒤** 전진에 들어온다. 지금 옮길 이유가 없다.
+
+    미루는 편이 낫다 — 그사이 새 열이 들어와 더 나은 자리가 생길 수 있고,
+    지금 옮기면 그 걸음수를 되돌려야 할 수도 있다. 앞을 내다보는 계획이라야
+    이 구분이 된다(그리디는 무조건 칩 쪽으로 움직인다).
+    """
     scene = make_scene([
         ".....",
         ".P...",
@@ -316,8 +335,7 @@ def test_멀리_있는_칩은_그_행에_서서_전진해_받는다():
         ".....",
     ])
     plan = plan_route(scene)
-    assert plan.kind == PlanKind.GOAL
-    assert plan.path == [(1, 1), (2, 1), (2, 2)],         f"칩이 있는 2행으로 내려가 전진해야 합니다: {plan.path}"
+    assert plan.path == [(1, 1), (1, 2)],         f"제자리에서 전진해야 합니다: {plan.path}"
 
 
 # ------------------------------------- 주황칩(필수 아이템)이 여러 개인 경우
@@ -618,3 +636,57 @@ def test_더_가까운_칩이_있으면_거리가_우선이다():
         ".....",
     ])
     assert plan.target == (0, 0),         f"걸어서 닿는 칩은 먼저 먹어야 합니다: {plan.target}"
+
+
+# ------------------- 걸음수 아이템은 하나에 +5 (사용자 확인)
+def _scene_items(rows, kinds):
+    from digimonup.vision.recognize import Detection, Scene
+    sym = {".": Kind.EMPTY, "P": Kind.PLAYER, "G": Kind.GOAL,
+           "X": Kind.OBSTACLE, "i": Kind.ITEM}
+    cells = [[sym[ch] for ch in row] for row in rows]
+    player = None
+    for r in range(5):
+        for c in range(5):
+            if rows[r][c] == "P":
+                player = Detection(Kind.PLAYER, r, c, 1.0)
+    return Scene(grid=None, cells=cells, player=player, goals=[], item_kinds=kinds)
+
+
+def test_걸음수_아이템은_두_칸_옮겨서라도_받는다():
+    """하나에 +5 라서 네 걸음 이내로 움직이면 이득이다."""
+    scene = _scene_items([
+        ".....",
+        ".....",
+        "..i..",
+        ".....",
+        ".P...",
+    ], {(2, 2): "steps"})
+    plan = plan_route(scene)
+    assert plan.path[-1] == (2, 2), \
+        f"두 칸 올라가 +5 를 받는 편이 이득입니다: {plan.path}"
+
+
+def test_칩과_걸음수_아이템이_겹치면_칩이_먼저다():
+    """둘 다 갈 수 있으면 칩이다. 걸음수는 +5, 칩은 그보다 값이 크다."""
+    scene = _scene_items([
+        "..G..",
+        ".....",
+        ".P...",
+        ".....",
+        "..i..",
+    ], {(4, 2): "steps"})
+    plan = plan_route(scene)
+    assert plan.path[-1] == (0, 2),         f"같은 두 칸이면 칩 쪽으로 가야 합니다: {plan.path}"
+
+
+def test_네_칸_옮겨_걸음수를_받는_것은_이득이다():
+    """네 칸 이동(-4) + 아이템(+5) = 순이득 +1. 사용자 확인: 하나에 +5."""
+    scene = _scene_items([
+        "..i..",
+        ".....",
+        ".....",
+        ".....",
+        ".P...",
+    ], {(0, 2): "steps"})
+    plan = plan_route(scene)
+    assert plan.path[-1] == (0, 2), f"이득이면 받아야 합니다: {plan.path}"
