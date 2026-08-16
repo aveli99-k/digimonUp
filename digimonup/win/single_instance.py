@@ -37,9 +37,39 @@ def acquire(name: str = MUTEX_NAME) -> bool:
     return True
 
 
+_ENUM_PROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+
+def find_window(prefix: str = GUI_TITLE) -> int:
+    """제목이 prefix 로 시작하는 보이는 창의 HWND. 없으면 0.
+
+    **앞부분만 본다.** GUI 제목에는 버전이 붙어 있어서("digimonUp 매크로  v1.7.0")
+    FindWindowW 로 정확히 맞춰 찾으면 절대 못 찾는다. 그러면 두 번째 실행이
+    떠 있는 창을 앞으로 가져오지 못하고 "이미 실행 중입니다" 상자만 띄운다.
+    제목에 버전을 넣기로 한 순간부터 조용히 그렇게 되어 있었다.
+    """
+    found = []
+
+    def cb(hwnd, _):
+        if not _user32.IsWindowVisible(hwnd):
+            return True
+        length = _user32.GetWindowTextLengthW(hwnd)
+        if length <= 0:
+            return True
+        buf = ctypes.create_unicode_buffer(length + 1)
+        _user32.GetWindowTextW(hwnd, buf, length + 1)
+        if buf.value.startswith(prefix):
+            found.append(hwnd)
+            return False              # 하나면 충분하다
+        return True
+
+    _user32.EnumWindows(_ENUM_PROC(cb), 0)
+    return found[0] if found else 0
+
+
 def focus_existing(title: str = GUI_TITLE) -> bool:
     """이미 떠 있는 창을 앞으로 가져온다. 찾으면 True."""
-    hwnd = _user32.FindWindowW(None, title)
+    hwnd = find_window(title)
     if not hwnd:
         return False
     if _user32.IsIconic(hwnd):

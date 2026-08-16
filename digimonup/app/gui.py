@@ -29,8 +29,11 @@ import tkinter as tk
 from tkinter import ttk
 
 from digimonup.base.version import __version__, version_line
+from digimonup.win.single_instance import GUI_TITLE
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# 제목 표시줄. **앞부분은 GUI_TITLE 그대로여야 한다.** 두 번째 실행이 떠 있는
+# 창을 찾을 때 이 앞부분으로 찾기 때문이다(single_instance.find_window).
+WINDOW_TITLE = f"{GUI_TITLE}  v{__version__}"
 
 MODES = [
     ("1", "네트워크", "매칭 버튼을 누르고, 포기 버튼이 뜨면 잠시 뒤 눌러 반복합니다."),
@@ -42,7 +45,7 @@ MODES = [
 class App:
     def __init__(self, root: tk.Tk):
         self.root = root
-        root.title(f"digimonUp 매크로  v{__version__}")
+        root.title(WINDOW_TITLE)
         root.geometry("1020x720")
         root.minsize(860, 600)
         self._set_icon(root)
@@ -77,7 +80,7 @@ class App:
 
         ttk.Label(top, text="기능 선택", font=("Malgun Gothic", 11, "bold")).grid(
             row=0, column=0, sticky="w", padx=(0, 12))
-        for i, (num, name, desc) in enumerate(MODES):
+        for i, (num, name, _desc) in enumerate(MODES):
             ttk.Radiobutton(top, text=f"{num}) {name}", value=num,
                             variable=self.mode).grid(row=0, column=1 + i, sticky="w",
                                                      padx=(0, 14))
@@ -126,7 +129,7 @@ class App:
         pane.add(right, weight=2)
 
     def _update_desc(self) -> None:
-        for num, name, desc in MODES:
+        for num, _name, desc in MODES:
             if num == self.mode.get():
                 self.desc_var.set(desc)
 
