@@ -200,6 +200,11 @@ class ExploreEngine:
         # 이번 사이클에 움직임 검사가 쓸 만한 결과를 냈는가.
         # (판이 스크롤 중이었거나 캡처가 모자라면 False)
         self._motion_valid = False
+        # 지금까지 본 걸음수 최솟값. 이동 성공을 가려내는 데 쓴다(_note_steps).
+        self._steps_min: int | None = None
+
+    # 걸음수가 이만큼 넘게 늘면 '채워 넣었다'로 보고 기준을 다시 잡는다.
+    _STEPS_REFILL = 5
 
     # ---------------------------------------------------------------- 정지
     def stop(self) -> None:
@@ -467,10 +472,30 @@ class ExploreEngine:
             return None
         return None
 
-    def _steps_dropped(self, img: np.ndarray, before: int) -> bool:
-        """걸음수가 줄었는가. 못 읽으면 False (다른 신호에 맡긴다)."""
-        got = counters.read(img)
-        return bool(got and got.steps is not None and got.steps < before)
+    def _note_steps(self, got) -> bool:
+        """읽은 걸음수를 최솟값에 반영한다. **새로 줄었으면** True.
+
+        걸음수는 줄기만 하므로 지금까지 본 최솟값이 진짜 값에 가장 가깝다.
+        화면이 늦게 갱신될 때 보이는 값은 그보다 크거나 같다.
+        """
+        steps = got.steps if got else None
+        if steps is None:
+            return False
+        prev = self._steps_min
+        if prev is None or steps > prev + self._STEPS_REFILL:
+            # 처음이거나, 걸음수를 채워 넣어 값이 뛴 경우다. 기준을 새로 잡는다.
+            self._steps_min = steps
+            return False
+        if steps < prev:
+            self._steps_min = steps
+            return True
+        return False
+
+    def _steps_dropped(self, img: np.ndarray) -> bool:
+        """걸음수가 지금까지 본 것보다 더 줄었는가. 못 읽으면 False."""
+        if not self.cfg.watch_counters:
+            return False
+        return self._note_steps(counters.read(img))
 
     def _arrived_by_motion(self, frames, grid: Grid,
                            to: tuple[int, int]) -> bool:
@@ -817,12 +842,18 @@ class ExploreEngine:
         before_sig = None
         before_sig_grid = None
 
-        # 걸음수는 이동에 성공할 때마다 정확히 1 줄어든다. 다른 신호가 모두
-        # 실패해도 이것으로 알아챌 수 있다(아래 참고). 읽는 데 1.8ms 다.
-        steps_before = None
+        # 걸음수는 이동에 성공할 때마다 정확히 1 줄어든다.
+        # 다만 화면에 반영되기까지 0.53~2.10초가 걸리는데(실측 22건) 이동
+        # 하나가 1.85초라, **직전 이동의 감소를 이번 이동의 성공으로 착각**할 수
+        # 있다. 실제로 그랬다: 움직이지도 않았는데 성공으로 치고 (2,1) 과 (2,0)
+        # 을 일곱 번 오갔다.
+        #
+        # 그래서 '클릭 직전 값'과 견주지 않고 **지금까지 본 최솟값**과 견준다.
+        # 걸음수는 줄기만 하므로, 화면이 늦게 갱신될 때 보이는 값은 언제나 진짜
+        # 값보다 크거나 같다. 그러니 최솟값보다 **더 작은** 값이 나왔다면 그건
+        # 새로 줄어든 것, 곧 이번 이동이 성공한 것이다.
         if self.cfg.watch_counters:
-            got = counters.read(before)
-            steps_before = got.steps if got else None
+            self._note_steps(counters.read(before))
 
         polls = 0
         # 확인 루프가 찍는 프레임을 (시각, 화면) 으로 조금 남긴다.
@@ -849,7 +880,7 @@ class ExploreEngine:
             scrolled = False
             if pos == to:
                 ok = True
-            elif steps_before is not None and self._steps_dropped(after, steps_before):
+            elif self._steps_dropped(after):
                 # **걸음수가 줄었으면 이동은 일어난 것이다.**
                 #
                 # 전진(오른쪽)은 판이 스크롤해서 플레이어가 화면상 같은 칸에

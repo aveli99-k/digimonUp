@@ -811,3 +811,40 @@ def test_이펙트_확인이_안_되면_예전처럼_두_번_본다():
     sc2 = _scene_with_goals([(1, 3)])
     eng._confirm_goals(sc2)
     assert [(d.row, d.col) for d in sc2.goals] == [(1, 3)]
+
+
+# ------------------- 걸음수로 이동 성공을 가려내기 — 실측 회귀
+def test_늦게_갱신된_걸음수를_이번_이동으로_착각하지_않는다():
+    """실측: 걸음수는 반영에 0.53~2.10초가 걸리는데 이동 하나는 1.85초다.
+
+    '클릭 직전 값보다 작으면 성공'으로 보면 직전 이동의 감소를 이번 이동의
+    성공으로 착각한다. 실제로 움직이지도 않았는데 성공으로 치고 (2,1) 과
+    (2,0) 을 일곱 번 오갔다.
+    """
+    from digimonup.vision.counters import Counters
+    eng = _engine([])
+    assert eng._note_steps(Counters(steps=100)) is False      # 기준 잡기
+    # 화면이 늦게 갱신돼 같은 값이 계속 보인다 -> 새 이동이 아니다
+    assert eng._note_steps(Counters(steps=100)) is False
+    # 직전 이동분이 이제야 반영됐다 -> 이번 이동의 증거는 아니다... 가 아니라
+    # 최솟값보다 작아졌으므로 '새로 줄었다'가 맞다
+    assert eng._note_steps(Counters(steps=99)) is True
+    # 그 값이 한동안 계속 보여도 다시 성공으로 세지 않는다
+    assert eng._note_steps(Counters(steps=99)) is False
+    assert eng._note_steps(Counters(steps=100)) is False, "늦은 화면은 무시한다"
+
+
+def test_걸음수를_채워_넣으면_기준을_다시_잡는다():
+    from digimonup.vision.counters import Counters
+    eng = _engine([])
+    eng._note_steps(Counters(steps=10))
+    eng._note_steps(Counters(steps=900))          # 충전
+    assert eng._steps_min == 900
+    assert eng._note_steps(Counters(steps=899)) is True
+
+
+def test_걸음수를_못_읽으면_다른_신호에_맡긴다():
+    from digimonup.vision.counters import Counters
+    eng = _engine([])
+    assert eng._note_steps(Counters(steps=None)) is False
+    assert eng._note_steps(None) is False
