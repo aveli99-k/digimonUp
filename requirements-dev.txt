@@ -1,8 +1,33 @@
 # 개발/테스트용 추가 패키지
 #   설치:  pip install -r requirements.txt -r requirements-dev.txt
 #   실행:  python -m pytest tests -q
+#          python -m ruff check .
 
 -r requirements.txt
 
 pytest>=8.0
 pyinstaller>=6.0        # scripts/build_exe.bat 로 단일 EXE 를 만들 때만 필요
+
+# 정적 검사. 설정은 ruff.toml 에 있다.
+#
+# 테스트가 못 보는 자리를 메운다. 도구(tools/)는 게임을 띄워 놓고 손으로 돌리는
+# 것이라 자동 테스트가 닿지 않는데, check.py 는 화면을 캡처하고 유사도를 다
+# 계산한 **뒤에** 마지막 저장 줄에서 NameError 로 죽고 있었다(imwrite 를 아예
+# 가져오지 않았다). F 규칙(pyflakes)이 이런 것을 1초에 잡는다.
+ruff>=0.16
+
+# 죽은 코드 찾기. 상시로 돌리지는 않는다. 정리할 때 한 번씩 쓴다.
+# 아래 이름들은 오탐이라 빼 둔다 — 이 명령이 **아무것도 안 내면 깨끗한 상태**다.
+#   fail_min/reward_min/*_band  던전 설정 필드. getattr(cfg, KINDS[kind][…]) 로 읽는다
+#   FAILSAFE / PAUSE            pyautogui 모듈 설정
+#   _prepared                   TemplateSet 의 리사이즈 캐시. __dict__ 로 다룬다
+#
+#   python -m vulture digimonup tools launcher.py --min-confidence 60 \
+#       --ignore-names "fail_min,reward_min,fail_band,reward_band,challenge_band,FAILSAFE,PAUSE,_prepared"
+vulture>=2.16
+
+# 붙여넣기 중복 찾기. digimonup/ 와 tools/ 는 지금 임계 5줄에서 0% 다.
+#   python -c "import glob;from pylint.checkers.symilar import Run;\
+#       Run(['--duplicates=5','--ignore-comments','--ignore-docstrings','--ignore-imports']\
+#       +sorted(glob.glob('digimonup/**/*.py',recursive=True))+sorted(glob.glob('tools/*.py')))"
+pylint>=3.0
