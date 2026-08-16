@@ -21,6 +21,7 @@ import time
 
 import pyautogui
 
+from digimonup.vision import popup
 from digimonup.base.common import (enable_dpi_awareness, find_template, grab_screen,
                     is_stop_key_pressed, load_config, load_template, vk_of)
 
@@ -87,6 +88,8 @@ class NetworkMacro:
         verify_sec = float(cfg.get("giveup_verify_sec", 3.0))
         max_wait = max(float(cfg.get("giveup_max_wait_sec", 7.0)), delay)
         stop_vk = vk_of(cfg.get("stop_key", "F12"))
+        # 팝업을 닫고 기다리는 시간. 실측(던전): 바깥을 누르면 0.5초 안에 닫힌다.
+        popup_settle = float(cfg.get("popup_settle_sec", 0.8))
 
         lock_match: dict = {}
         lock_giveup: dict = {}
@@ -123,6 +126,22 @@ class NetworkMacro:
                 now = time.time()
                 sleep_for = interval
                 screen = grab_screen(region)
+
+                # 판이 끝나면 실패창/보상창이 올라오고, 그동안 아래 화면은
+                # 클릭을 먹지 않는다. 모르고 계속 누르면 헛클릭만 쌓인다.
+                # 규칙은 던전(3번)에서 검증된 것을 그대로 쓴다(popup 참고).
+                # 여기서는 모니터 전체를 캡처하므로 띠를 쓰지 않고 전체를 본다.
+                found = popup.find(screen, use_band=False)
+                if found:
+                    kind, pscore, box = found
+                    px, py = popup.close_point_for_box(
+                        box, screen.shape[1], screen.shape[0])
+                    self.log(f"[팝업] {popup.name_of(kind)}이(가) 떠 있습니다 "
+                             f"({pscore:.2f}). 바깥을 눌러 닫습니다.")
+                    self._click_at(px, py, offset, click_scale, move_duration)
+                    if self.stop_event.wait(popup_settle):
+                        break
+                    continue
 
                 m_found, m_pt, m_score = find_template(
                     screen, tpl_match, conf, multi_scale, scales, lock_match)

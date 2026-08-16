@@ -31,6 +31,7 @@ import numpy as np
 
 from digimonup.logic import chiptrack
 from digimonup.vision import counters
+from digimonup.vision import popup
 from digimonup.vision import overlay
 from digimonup.base.common import Stopped, is_stop_key_pressed, vk_of
 from digimonup.vision.board import Grid, N, detect_board
@@ -107,6 +108,9 @@ class ExploreConfig:
     # 것으로 오해해 **막힌 칸을 한 번 더 누른다.** 그러면 안내문이 또 떠서
     # 사라지길 2초 더 기다린다.
     dead_click_wait_sec: float = 0.6
+    # 판을 가리는 팝업(실패창/보상창)을 닫고 기다리는 시간.
+    # 실측(던전): 바깥을 누르면 0.5초 안에 닫힌다.
+    popup_settle_sec: float = 0.8
     # 먹지 않은 클릭을 몇 번까지 다시 눌러 볼지.
     #
     # 아무 일도 안 일어났으므로 두 번 움직일 위험이 없고, 판을 다시 인식하는
@@ -615,6 +619,27 @@ class ExploreEngine:
             return None
         return pathfind_break_cost(self.counts.steps, self.counts.break_)
 
+    # --------------------------------------------- 판을 가리는 팝업 닫기
+    def _close_popup_if_any(self, img: np.ndarray) -> bool:
+        """실패창/보상창이 떠 있으면 바깥을 눌러 닫는다. 닫았으면 True.
+
+        이 팝업들은 던전에서만 뜨는 것이 아니라 어떤 기능을 돌리든 판이 끝나면
+        올라오고, 그동안 아래 화면은 클릭을 먹지 않는다. 모르고 계속 누르면
+        헛클릭만 쌓인다. 규칙은 던전에서 검증된 것을 그대로 쓴다(popup 참고).
+        """
+        got = popup.find(img)
+        if got is None:
+            return False
+        kind, score, _box = got
+        w, h = self.window.client_size()
+        x, y = popup.close_point(w, h)
+        self.log(f"[팝업] {popup.name_of(kind)}이(가) 떠 있습니다 ({score:.2f}). "
+                 f"바깥({x},{y})을 눌러 닫습니다.")
+        self._check_stop()
+        self.window.click_client(x, y, self.cfg.move_duration)
+        self._sleep(self.cfg.popup_settle_sec)
+        return True
+
     # ------------------------------------------------- 칩 묶음 추적
     def _confirm_goals(self, scene: Scene) -> None:
         """검출된 칩을 그대로 쓰지 않고 **추적 중인 묶음**으로 갈아끼운다.
@@ -1109,6 +1134,10 @@ class ExploreEngine:
                     self.log("[개수] 걸음수를 다 썼습니다. 매크로를 멈춥니다.")
                     self.status("걸음수 소진")
                     break
+
+                # 팝업이 떠 있으면 아래 화면은 클릭을 먹지 않는다. 먼저 닫는다.
+                if self._close_popup_if_any(img):
+                    continue
 
                 grid = self._stable_grid(img, seed=True)
                 if grid is None:
