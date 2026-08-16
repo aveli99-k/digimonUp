@@ -5,6 +5,7 @@
     python launcher.py           -> GUI (기능 번호는 GUI 안에서 선택)
     python launcher.py 1         -> 콘솔에서 바로 네트워크
     python launcher.py 2         -> 콘솔에서 바로 탐사
+    python launcher.py 3         -> 콘솔에서 바로 던전
     python launcher.py --console -> 콘솔에서 번호를 물어본 뒤 실행
     python launcher.py --version -> 버전만 찍고 종료
 """
@@ -39,6 +40,7 @@ MENU = f"""
 ============================================
   1) 네트워크  - 매칭/포기 자동 클릭
   2) 탐사      - 5x5 게임판 자동 이동
+  3) 던전      - 도전 자동 클릭, 실패창 자동 닫기
   q) 종료
 """
 
@@ -50,15 +52,23 @@ def run_console(mode: str) -> int:
     if mode == "2":
         from digimonup.app.explore import ExploreEngine
         from digimonup.base.settings import load_explore_config
-        engine = ExploreEngine(load_explore_config())
-        try:
-            engine.run()
-        except KeyboardInterrupt:
-            engine.stop()
-            print("\nCtrl+C 로 중단했습니다.")
-        return 0
+        return _run_engine(ExploreEngine(load_explore_config()))
+    if mode == "3":
+        from digimonup.app.dungeon import DungeonEngine
+        from digimonup.base.settings import load_dungeon_config
+        return _run_engine(DungeonEngine(load_dungeon_config()))
     print("잘못된 번호입니다.")
     return 1
+
+
+def _run_engine(engine) -> int:
+    """Ctrl+C 를 정지 요청으로 바꿔 준다. 클릭이 대기 중이어도 즉시 접힌다."""
+    try:
+        engine.run()
+    except KeyboardInterrupt:
+        engine.stop()
+        print("\nCtrl+C 로 중단했습니다.")
+    return 0
 
 
 def main(argv: list[str]) -> int:
@@ -87,12 +97,12 @@ def main(argv: list[str]) -> int:
             pass
         return 0
 
-    if args and args[0] in ("1", "2"):
+    if args and args[0] in ("1", "2", "3"):
         return run_console(args[0])
 
     if args and args[0] in ("--console", "-c"):
         print(MENU)
-        choice = input("번호 선택 (1/2, q=종료): ").strip().lower()
+        choice = input("번호 선택 (1/2/3, q=종료): ").strip().lower()
         if choice in ("q", "quit", "exit", ""):
             return 0
         return run_console(choice)

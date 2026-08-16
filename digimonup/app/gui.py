@@ -3,6 +3,7 @@
 더블클릭 한 번으로 실행되고, 시작할 때 기능 번호를 고른다.
     1) 네트워크  - 기존 매칭/포기 자동 클릭
     2) 탐사      - 5x5 게임판 경로 자동 이동
+    3) 던전      - 도전 자동 클릭, 실패창 자동 닫기
 
 GUI 가 보여주는 것
     - 시작 / 정지 버튼
@@ -34,6 +35,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODES = [
     ("1", "네트워크", "매칭 버튼을 누르고, 포기 버튼이 뜨면 잠시 뒤 눌러 반복합니다."),
     ("2", "탐사", "5x5 게임판을 인식해 장애물을 피해 한 칸씩 이동합니다."),
+    ("3", "던전", "도전 버튼과 실패창을 함께 찾아, 보이는 쪽을 한 번씩 눌러 반복합니다."),
 ]
 
 
@@ -205,6 +207,8 @@ class App:
         try:
             if mode == "2":
                 self._run_explore()
+            elif mode == "3":
+                self._run_dungeon()
             else:
                 self._run_network()
         except Exception:
@@ -212,14 +216,12 @@ class App:
         finally:
             self.msgq.put(("done", None))
 
-    def _run_explore(self) -> None:
-        from digimonup.app.explore import ExploreEngine
-        from digimonup.base.settings import load_explore_config
+    def _run_windowed(self, engine) -> None:
+        """창을 고정해서 쓰는 엔진(탐사/던전)을 돌린다.
 
-        engine = ExploreEngine(load_explore_config(), log=self.log,
-                               status=self.status, preview=self.preview)
+        고정된 HWND 를 GUI 에 표시하려고 pick_window 를 한 겹 감싼다.
+        """
         self.engine = engine
-        # 창이 고정되면 GUI 에 표시한다.
         orig_pick = engine.pick_window
 
         def pick():
@@ -229,6 +231,20 @@ class App:
 
         engine.pick_window = pick
         engine.run()
+
+    def _run_explore(self) -> None:
+        from digimonup.app.explore import ExploreEngine
+        from digimonup.base.settings import load_explore_config
+
+        self._run_windowed(ExploreEngine(load_explore_config(), log=self.log,
+                                         status=self.status, preview=self.preview))
+
+    def _run_dungeon(self) -> None:
+        from digimonup.app.dungeon import DungeonEngine
+        from digimonup.base.settings import load_dungeon_config
+
+        self._run_windowed(DungeonEngine(load_dungeon_config(), log=self.log,
+                                         status=self.status, preview=self.preview))
 
     def _run_network(self) -> None:
         from digimonup.app import network_macro

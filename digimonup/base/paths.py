@@ -60,6 +60,7 @@ def resource(*parts: str) -> str:
 
 TEMPLATE_DIR = resource("templates")
 EXPLORE_TEMPLATE_DIR = os.path.join(TEMPLATE_DIR, "explore")
+DUNGEON_TEMPLATE_DIR = os.path.join(TEMPLATE_DIR, "dungeon")
 CONFIG_PATH = resource("config.json")
 
 # 쓰는 폴더는 항상 EXE 옆이다 (임시 폴더에 쓰면 프로그램이 끝날 때 사라진다).
