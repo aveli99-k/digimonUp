@@ -150,7 +150,31 @@ def find_rows(img: np.ndarray) -> list[tuple[int, int, int, int]]:
             continue
         found.append((x0 + int(x), y0 + int(y), int(bw), int(bh)))
     found.sort(key=lambda b: b[1])
-    return found
+    return _fill_missing_rows(found)
+
+
+def _fill_missing_rows(found: list[tuple[int, int, int, int]]
+                       ) -> list[tuple[int, int, int, int]]:
+    """빠진 줄을 **일정한 간격**으로 채워 넣는다.
+
+    아이콘 세 개는 같은 x 에 같은 간격으로 놓인다. 그런데 옆에 다른 것이 붙으면
+    그 줄만 못 찾는다.
+
+    실측 회귀: 돌진을 다 쓰자 그 줄 왼쪽에 충전 타이머('55:07', 분홍)가 떴다.
+    채도가 높아 아이콘과 한 덩어리로 이어졌고, 가로로 길쭉해져 걸러졌다.
+    그러면 줄이 둘만 남는데, 그때 **세 항목이 전부 None 이 된다.** 개수를 모르면
+    아이템을 안 쓰도록 해 두었으므로(ExploreEngine._can_use) 매크로가 통째로
+    보수적으로 돌아 버린다. 한 줄 때문에 나머지 둘까지 잃을 이유가 없다.
+    """
+    if len(found) != 2:
+        return found[:3]
+    (x1, y1, w1, h1), (x2, y2, w2, h2) = found
+    gap = y2 - y1
+    if gap <= 0:
+        return found
+    # 셋 중 어느 둘을 찾았는지는 모른다. 위 둘이라고 보고 아래를 채우는 것이
+    # 맞다 — 아래(돌진)가 타이머 때문에 가려지는 것이 실측된 경우다.
+    return found + [(x2, y2 + gap, w2, h2)]
 
 
 def _strip_of(img: np.ndarray, icon: tuple[int, int, int, int]) -> np.ndarray:

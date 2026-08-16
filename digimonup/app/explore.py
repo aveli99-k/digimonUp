@@ -37,7 +37,7 @@ from digimonup.base.common import Stopped, is_stop_key_pressed, vk_of
 from digimonup.vision.board import Grid, N, detect_board
 from digimonup.win.emulator_window import (EmulatorWindow, capture_client,
                              enable_dpi_awareness, enumerate_candidates)
-from digimonup.logic.pathfind import PlanKind, plan_route
+from digimonup.logic.pathfind import ADVANCE_COL, PlanKind, plan_route
 from digimonup.logic.pathfind import break_cost as pathfind_break_cost
 from digimonup.vision.recognize import (Detection, Kind, Scene, TemplateSet, analyze,
                        find_blocked_toast,
@@ -146,9 +146,10 @@ class ExploreConfig:
     allow_obstacle_break: bool = True
     obstacle_break_max_failures: int = 2
     use_green_button: bool = True
-    # 칩이 안 보일 때 돌진(초록 버튼)으로 세 칸씩 나아간다.
-    # 실측: 돌진 1개 = 세 칸 전진, 걸음수 0. 일반 전진보다 언제나 이득이다.
+    # 돌진(초록 버튼)으로 세 칸씩 나아간다.
+    # 실측: 돌진 1개 = 세 칸 전진, 걸음수 0, 지나가는 칩도 먹는다.
     use_dash: bool = True
+    dash_cells: int = 3        # 돌진 한 번에 나아가는 칸 수 (실측)
     green_button_max_uses: int = 0      # 0 = 제한 없음
     blocked_wait_sec: float = 2.0
 
@@ -611,28 +612,45 @@ class ExploreEngine:
         return False
 
     def _dash_if_worth(self, scene: Scene) -> bool:
-        """돌진(우측 하단 초록 버튼)을 쓸 만하면 쓴다. 썼으면 True.
+        """돌진(우측 하단 초록 버튼)을 **아껴서** 쓴다. 썼으면 True.
 
-        **실험으로 확정한 규칙**: 초록 버튼을 누르면
-            돌진 1개 소모 / 걸음수 0 소모 / 부수기 0 소모 / **세 칸 전진**
-        (실측: 거리 29,714m -> 29,717m, 돌진 46 -> 45, 걸음수 1699 그대로)
+        실험으로 확정한 규칙
+            돌진 1개 소모 / 걸음수 0 / 부수기 0 / **세 칸 전진**
+            (거리 29,714m -> 29,717m, 돌진 46 -> 45, 걸음수 1699 그대로)
+            그리고 **지나가는 칩을 먹는다**
+            (같은 행 2열 칩을 두고 돌진하니 보유량 267.8K -> 268.0K)
 
-        일반 전진은 클릭 한 번에 한 칸이고 걸음수도 1 든다. 돌진은 같은 클릭
-        한 번에 세 칸이고 걸음수는 0이다. **쓸 수 있으면 언제나 이득이다.**
+        **그래서 돌진 하나의 값은 걸음수 세 개다.** 그런데 남은 양은 걸음수
+        1550 대 돌진 45 로 서른네 배 차이가 난다. 빈 길에서 돌진을 쓰면
+        걸음수 셋을 아끼자고 훨씬 귀한 것을 버리는 셈이다.
 
-        다만 **칩이 보일 때는 쓰지 않는다.** 세 칸을 건너뛰는 동안 그 칩을
-        지나칠 수 있고, 지나치는지 아닌지는 아직 확인하지 못했다. 칩이 목적인
-        이상 확인 안 된 위험은 지지 않는다.
+        그래서 **칩을 챙길 때만 쓴다.** 칩 하나는 걸음수 세 개보다 값지다.
+        조건은 둘 다 맞아야 한다.
+            1. 앞 세 열 **내 행**에 칩이 있다        -> 돌진이 그걸 먹는다
+            2. 앞 세 열 **다른 행**에는 칩이 없다    -> 지나쳐 잃을 것이 없다
         """
-        if not self.cfg.use_dash:
+        if not self.cfg.use_dash or not self._can_use("dash"):
             return False
-        if scene.goals:
-            return False                  # 칩이 보인다. 건너뛸 위험을 지지 않는다
-        if not self._can_use("dash"):
+        if scene.player is None:
             return False
+
+        row = scene.player.row
+        span = range(ADVANCE_COL, min(N, ADVANCE_COL + self.cfg.dash_cells))
+        mine = [(d.row, d.col) for d in scene.goals if d.row == row and d.col in span]
+        if not mine:
+            return False                  # 챙길 칩이 없으면 걸어간다 (돌진을 아낀다)
+
+        missed = [(d.row, d.col) for d in scene.goals
+                  if d.row != row and d.col in span]
+        if missed:
+            self.log(f"[돌진] 다른 행의 칩 {sorted(missed)} 을(를) 지나치게 되어 "
+                     f"돌진하지 않습니다.")
+            return False
+
         if self._press_green_button():
-            self.log("[돌진] 칩이 없어 세 칸 전진합니다 "
-                     f"(남은 돌진 {self.counts.dash if self.counts.dash is not None else '?'}).")
+            self.log(f"[돌진] 내 행의 칩 {sorted(mine)} 을(를) 챙기며 세 칸 "
+                     f"전진합니다 (남은 돌진 "
+                     f"{self.counts.dash if self.counts.dash is not None else '?'}).")
             self._last_layout = None
             return True
         return False
@@ -784,13 +802,24 @@ class ExploreEngine:
             self._last_counts_line = line
 
     def _can_use(self, name: str) -> bool:
-        """그 아이템을 쓸 수 있는가. **모르면 True**(예전처럼 해 보고 판단).
+        """그 아이템을 쓸 수 있는가.
 
-        0 이라고 확실히 읽었을 때만 막는다. 잘못 읽어서 못 쓰게 되는 것보다,
-        모를 때는 시도해 보는 편이 낫다.
+        **개수를 보기로 해 놓고 못 읽었으면 쓰지 않는다.**
+
+        예전에는 '모르면 해 보자'였다. 그런데 개수 읽기가 막히면(실측: 돌진 줄
+        옆에 충전 타이머가 뜨자 줄을 두 개만 찾아 세 항목이 전부 None 이 됐다)
+        그 말은 **아무 제동 없이 계속 쓴다**는 뜻이 된다. 실제로 돌진 45개를
+        다 태워 버렸다. 아껴야 하는 자원에서 '모름'은 '써도 된다'가 아니다.
+
+        개수를 아예 안 보기로 했다면(watch_counters=False) 예전처럼 해 본다.
+        그때는 못 읽는 것이 아니라 애초에 안 보는 것이다.
         """
+        if not self.cfg.watch_counters:
+            return True
         left = self.counts.get(name)
-        return left is None or left > 0
+        if left is None:
+            return False
+        return left > 0
 
     def _out_of_steps(self) -> bool:
         return (self.cfg.stop_when_out_of_steps

@@ -371,9 +371,11 @@ def test_장애물_파괴가_연속_실패하면_더_이상_시도하지_않는�
     toast = _with_toast(clean)
     patch = toast[560:640, 150:560].copy()
 
+    # 합성 화면에는 개수 표시가 없다. 개수를 안 보는 설정으로 두어야 파괴
+    # 실패 처리 자체를 시험할 수 있다(안 그러면 '모르니 안 쓴다'로 막힌다).
     eng = _engine([clean], allow_obstacle_break=True, obstacle_break_max_failures=2,
                   blocked_wait_sec=0.05, cycle_pause_sec=0.0, lost_retry_sec=0.05,
-                  toast_clear_repeat=1)
+                  toast_clear_repeat=1, watch_counters=False)
     eng.window = ToastAfterClickWindow(clean, toast)
     eng.templates = _toast_templates(patch)
     eng.pick_window = lambda: eng.window
@@ -577,10 +579,26 @@ def test_돌진이_0개면_초록버튼을_누르지_않는다():
     assert eng.stats.green_button_uses == 0
 
 
-def test_개수를_모르면_예전처럼_시도한다():
-    """숫자 템플릿이 없어 못 읽는 경우. 막으면 아예 못 쓰게 되므로 시도한다."""
+def test_개수를_못_읽으면_아껴서_쓰지_않는다():
+    """실측 회귀: 돌진 줄 옆에 충전 타이머가 뜨자 줄을 두 개만 찾아 세 항목이
+    전부 None 이 됐다. 예전 규칙('모르면 해 보자')이면 아무 제동 없이 계속
+    쓴다는 뜻이 되고, 실제로 돌진 45개를 다 태웠다.
+
+    아껴야 하는 자원에서 '모름'은 '써도 된다'가 아니다.
+    """
     eng = _engine([synth.make_board(BLOCKED)] * 5)
-    eng.counts = _counts()               # 전부 None = 모름
+    eng.counts = _counts()               # 전부 None = 못 읽음
+    assert eng._can_use("dash") is False
+    assert eng._can_use("break") is False
+
+
+def test_개수를_아예_안_보기로_했으면_예전처럼_시도한다():
+    """못 읽는 것과 애초에 안 보는 것은 다르다.
+
+    숫자 템플릿이 없는 사람은 watch_counters 를 꺼서 예전처럼 쓸 수 있어야 한다.
+    """
+    eng = _engine([synth.make_board(BLOCKED)] * 5, watch_counters=False)
+    eng.counts = _counts()
     assert eng._can_use("dash") is True
     assert eng._can_use("break") is True
 
@@ -924,28 +942,46 @@ def test_걸러낸_칩이_scene_goal_로_되살아나지_않는다():
 
 # ------------------- 돌진 (실험으로 확정한 규칙)
 from digimonup.vision.counters import Counters  # noqa: E402
-def test_칩이_보이면_돌진하지_않는다():
-    """돌진은 세 칸을 건너뛴다. 그 사이의 칩을 지나치는지 아직 모르므로,
-    칩이 목적인 이상 확인 안 된 위험은 지지 않는다."""
+def _with_player(scene, row, col):
+    from digimonup.vision.recognize import Detection, Kind
+    scene.player = Detection(Kind.PLAYER, row, col, 1.0)
+    return scene
+
+
+def test_다른_행의_칩을_지나치게_되면_돌진하지_않는다():
+    """돌진은 세 칸을 건너뛴다. 그 칩들은 화면 밖으로 밀려 영영 못 먹는다."""
     eng = _engine([])
     eng.counts = Counters(steps=100, break_=10, dash=5)
     pressed = []
     eng._press_green_button = lambda: pressed.append(1) or True
 
-    sc = _scene_with_goals([(2, 3)])
+    sc = _with_player(_scene_with_goals([(2, 3)]), 0, 1)   # 칩은 2행, 나는 0행
     assert eng._dash_if_worth(sc) is False
     assert pressed == []
 
 
-def test_칩이_없으면_돌진한다():
-    """돌진 1개 = 세 칸 전진, 걸음수 0 (실측). 일반 전진보다 언제나 이득이다."""
+def test_같은_행의_칩은_돌진으로_챙긴다():
+    """실측: 같은 행 2열 칩을 두고 돌진하니 보유량 267.8K -> 268.0K."""
     eng = _engine([])
     eng.counts = Counters(steps=100, break_=10, dash=5)
     pressed = []
     eng._press_green_button = lambda: pressed.append(1) or True
 
-    assert eng._dash_if_worth(_scene_with_goals([])) is True
+    sc = _with_player(_scene_with_goals([(0, 2), (0, 4)]), 0, 1)
+    assert eng._dash_if_worth(sc) is True
     assert pressed == [1]
+
+
+def test_챙길_칩이_없으면_돌진을_아낀다():
+    """돌진 하나는 걸음수 세 개어치인데 남은 양은 걸음수 1550 대 돌진 45 다.
+
+    빈 길에서 쓰면 걸음수 셋을 아끼자고 서른네 배 귀한 것을 버리는 셈이다.
+    """
+    eng = _engine([])
+    eng.counts = Counters(steps=100, break_=10, dash=5)
+    eng._press_green_button = lambda: (_ for _ in ()).throw(
+        AssertionError("챙길 칩이 없는데 돌진했습니다"))
+    assert eng._dash_if_worth(_with_player(_scene_with_goals([]), 1, 1)) is False
 
 
 def test_돌진이_0개면_누르지_않는다():
@@ -953,7 +989,7 @@ def test_돌진이_0개면_누르지_않는다():
     eng.counts = Counters(steps=100, break_=10, dash=0)
     eng._press_green_button = lambda: (_ for _ in ()).throw(
         AssertionError("돌진이 0인데 눌렀습니다"))
-    assert eng._dash_if_worth(_scene_with_goals([])) is False
+    assert eng._dash_if_worth(_with_player(_scene_with_goals([]), 1, 1)) is False
 
 
 def test_설정으로_돌진을_끌_수_있다():
@@ -961,4 +997,4 @@ def test_설정으로_돌진을_끌_수_있다():
     eng.counts = Counters(steps=100, break_=10, dash=5)
     eng._press_green_button = lambda: (_ for _ in ()).throw(
         AssertionError("꺼 두었는데 눌렀습니다"))
-    assert eng._dash_if_worth(_scene_with_goals([])) is False
+    assert eng._dash_if_worth(_with_player(_scene_with_goals([]), 1, 1)) is False
