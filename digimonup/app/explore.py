@@ -100,6 +100,15 @@ class ExploreConfig:
     # 판이 그대로인 채로 이만큼 연속 확인되면 '클릭이 안 먹었다'로 보고 접는다.
     # 이 검사는 도착이 확인되지 않은 폴링에서만 도므로 3이면 충분하다.
     dead_click_polls: int = 3
+    # 먹지 않은 클릭을 몇 번까지 다시 눌러 볼지.
+    #
+    # 아무 일도 안 일어났으므로 두 번 움직일 위험이 없고, 판을 다시 인식하는
+    # 것(인식 0.37초 + 움직임 촬영 0.45초)보다 싸다.
+    #
+    # 다만 **한 번이면 충분하다.** 실측(180초): 두 번까지 허용하니 재시도 18회로
+    # 실패가 21 -> 13건으로 줄었지만, 남은 실패 하나에 드는 시간이 0.97 -> 3.03초로
+    # 늘어 총합으로는 이득이 없었다. 재시도 성공률이 44% 라 두 번째는 대개 헛수고다.
+    dead_click_retries: int = 1
 
     # 목적지 = 주황칩(필수 아이템)
     # 탐사에는 종착점이 없지만, 판에 나오는 주황칩은 반드시 먹어야 한다.
@@ -869,7 +878,8 @@ class ExploreEngine:
             self._note_steps(counters.read(before))
 
         polls = 0
-        still = 0          # 화면이 클릭 전과 똑같은 채로 몇 번 연속인가
+        still = 0
+        retries = 0          # 화면이 클릭 전과 똑같은 채로 몇 번 연속인가
         # 확인 루프가 찍는 프레임을 (시각, 화면) 으로 조금 남긴다.
         # 도착 확인에 **움직임**을 쓰기 위해서다. 아래 _arrived_by_motion 참고.
         seen_frames: deque = deque(maxlen=60)
@@ -945,6 +955,26 @@ class ExploreEngine:
                 if self._last_same < DEAD_CLICK_SAME:
                     still += 1
                     if still >= self.cfg.dead_click_polls:
+                        # **먹지 않은 클릭은 그 자리에서 다시 누른다.**
+                        #
+                        # 아무 일도 일어나지 않았으므로 두 번 움직일 위험이 없다.
+                        # 반면 판을 통째로 다시 인식하는 데는 인식 0.37초 +
+                        # 움직임 촬영 0.45초가 든다. 다시 누르는 편이 훨씬 싸다.
+                        #
+                        # 실측: 목표가 강조칸(게임이 갈 수 있다고 표시한 칸)이고
+                        # 바로 옆인데도 안 먹는 경우가 있었다. 논리가 아니라
+                        # 클릭이 전달되지 않은 것이다.
+                        if retries < self.cfg.dead_click_retries:
+                            retries += 1
+                            still = 0
+                            self.log(f"[클릭] 먹지 않았습니다. 다시 누릅니다 "
+                                     f"({retries}/{self.cfg.dead_click_retries}) "
+                                     f"{direction} {frm}->{to}")
+                            self._check_stop()
+                            self.window.click_client(cx, cy, self.cfg.move_duration)
+                            deadline = time.time() + self.cfg.move_timeout_sec
+                            time.sleep(self.cfg.click_settle_sec)
+                            continue
                         self.log(f"[클릭] 판이 그대로입니다. 이 클릭은 먹지 "
                                  f"않았습니다 ({direction} {frm}->{to}).")
                         return False, grid, False

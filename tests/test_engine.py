@@ -84,6 +84,20 @@ def test_이전_위치의_잔상을_이동_성공으로_처리하지_않는다()
 
     ok, _, _ = eng._do_move(grid, (1, 1), (1, 2), "RIGHT")
     assert ok is False, "이전 칸에 남아 있는데 성공으로 봤습니다"
+    # 판이 하나도 안 바뀌었으므로 '먹지 않은 클릭'으로 보고 다시 누른다.
+    # 아무 일도 일어나지 않았으니 두 번 움직일 위험은 없다.
+    assert len(eng.window.clicks) == 1 + eng.cfg.dead_click_retries
+    assert len(set(eng.window.clicks)) == 1, "다시 누를 때도 같은 자리를 눌러야 합니다"
+
+
+def test_다시_누르기를_끄면_클릭은_한_번뿐이다():
+    """두 번 움직일 위험이 없는지 확인하는 자리이기도 하다."""
+    stay = _frame((1, 1))
+    eng = _engine([stay] * 40, dead_click_retries=0)
+    grid = board.detect_board(stay)
+
+    ok, _, _ = eng._do_move(grid, (1, 1), (1, 2), "RIGHT")
+    assert ok is False
     assert len(eng.window.clicks) == 1, "한 칸 이동에는 클릭이 정확히 한 번"
 
 
@@ -662,6 +676,22 @@ def _lock(eng, goals):
     """묶음을 잠근다. 두 프레임 연속으로 같아야 잠기므로 두 번 준다."""
     for _ in range(2):
         eng._confirm_goals(_scene_with_goals(goals))
+
+
+def test_확인된_새_칩은_언제든_받아들인다():
+    """실측 회귀: 묶음을 닫아 두니 그사이 오른쪽에서 들어온 진짜 칩까지 버렸다.
+
+    180초 74사이클에서 10사이클이 칩을 무시했고, 거기엔 (0,4), (3,4) 처럼
+    막 들어온 칩도 있었다. 이펙트를 가려낼 수 있는 지금은 닫아 둘 이유가 없다.
+    """
+    eng = _engine([])
+    eng._motion_valid = True
+    eng._moving_cells = set()
+    eng._confirm_goals(_scene_with_goals([(1, 3)]))
+
+    sc = _scene_with_goals([(1, 3), (0, 4)])        # 새 열에서 칩이 들어왔다
+    eng._confirm_goals(sc)
+    assert sorted((d.row, d.col) for d in sc.goals) == [(0, 4), (1, 3)]
 
 
 def test_잠근_묶음에_없는_칩은_이펙트로_본다():

@@ -73,10 +73,9 @@ class ChipTracker:
         return True
 
     def update(self, detected: set[Cell], trust_now: bool = False) -> set[Cell]:
-        """이번 프레임 검출 결과로 묶음을 손질하고, 지금 유효한 칩을 돌려준다.
+        """이번 프레임 검출 결과로 추적 목록을 손질하고, 유효한 칩을 돌려준다.
 
-        잠겨 있으면 **새 칩은 받지 않는다.** 알고 있던 칩이 계속 안 보이면
-        (MISS_LIMIT 회) 없어진 것으로 보고 뺀다.
+        알고 있던 칩이 계속 안 보이면 (MISS_LIMIT 회) 없어진 것으로 보고 뺀다.
 
         trust_now
             이번 화면에 획득 이펙트가 없다는 것을 **확인했으면** True.
@@ -90,18 +89,29 @@ class ChipTracker:
             바로 목표가 된 경우가 **0건**이었고, 36건이 한 사이클 이상 늦었다.
             그사이 전진해 버리면 칩이 뒤로 밀려 되돌아가서 먹어야 한다.
         """
-        if not self.chips:
-            if detected and (trust_now
-                             or (self._pending is not None
-                                 and self._pending == detected)):
+        if trust_now:
+            # **이펙트가 없다고 확인했으면 보이는 칩을 다 받아들인다.**
+            #
+            # 묶음을 닫아 두던 예전 방식은 이펙트를 가려낼 방법이 없던 때의
+            # 것이다. 그때는 '한 번 읽고 다 먹을 때까지 안 본다'가 최선이었지만,
+            # 그러면 그사이 오른쪽에서 새로 들어온 **진짜 칩도 버린다.**
+            # 실측(180초 74사이클): 열 1~4 에 걸쳐 10사이클에서 칩을 무시했고,
+            # 거기엔 (0,4), (3,4) 처럼 막 들어온 칩도 있었다.
+            for chip in detected:
+                self._misses.setdefault(chip, 0)
+            self.chips |= set(detected)
+            self._pending = None
+        elif not self.chips:
+            # 이펙트 여부를 확인하지 못했다. 두 프레임 연속으로 같아야 믿는다.
+            if detected and self._pending == detected:
                 self.chips = set(detected)
                 self._misses = {c: 0 for c in detected}
                 self._pending = None
             else:
                 self._pending = set(detected)
             return set(self.chips)
-
-        self._pending = None
+        else:
+            self._pending = None
         for chip in list(self.chips):
             if chip in detected:
                 self._misses[chip] = 0
