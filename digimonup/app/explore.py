@@ -26,6 +26,7 @@ import time
 from collections import Counter, deque
 from dataclasses import dataclass
 
+import cv2
 import numpy as np
 
 from digimonup.logic import chiptrack
@@ -96,6 +97,9 @@ class ExploreConfig:
     # 알아채 확인 루프가 더 오래 돌았고, 실주행에서 이득이 없었다.
     # 검사 자체는 띠만 보도록 고쳐 이미 절반이 됐다(67ms -> 35ms).
     toast_check_every: int = 1
+    # 판이 그대로인 채로 이만큼 연속 확인되면 '클릭이 안 먹었다'로 보고 접는다.
+    # 이 검사는 도착이 확인되지 않은 폴링에서만 도므로 3이면 충분하다.
+    dead_click_polls: int = 3
 
     # 목적지 = 주황칩(필수 아이템)
     # 탐사에는 종착점이 없지만, 판에 나오는 주황칩은 반드시 먹어야 한다.
@@ -132,6 +136,11 @@ class ExploreConfig:
 
     # 디버그
     save_debug: bool = True
+
+
+# 셀 요약이 이만큼도 안 바뀌었으면 '판이 그대로'로 본다.
+# 실측: 먹히지 않은 클릭 0.001~0.006 / 성공한 전진 0.07~0.17.
+DEAD_CLICK_SAME = 0.02
 
 
 class Stopped(Exception):
@@ -202,6 +211,8 @@ class ExploreEngine:
         self._motion_valid = False
         # 지금까지 본 걸음수 최솟값. 이동 성공을 가려내는 데 쓴다(_note_steps).
         self._steps_min: int | None = None
+        # 직전 폴링의 '판이 그대로' 점수 (_scrolled_one_cell 이 채운다).
+        self._last_same: float | None = None
 
     # 걸음수가 이만큼 넘게 늘면 '채워 넣었다'로 보고 기준을 다시 잡는다.
     _STEPS_REFILL = 5
@@ -800,6 +811,8 @@ class ExploreEngine:
         b, vb = self._cell_signature(after, grid)
         moved = self._shift_score(a, b, dr, dc, va, vb)
         same = self._shift_score(a, b, 0, 0, va, vb)
+        # 클릭이 먹었는지 판단하는 데도 쓰려고 남겨 둔다(_do_move 참고).
+        self._last_same = same
         # '한 칸 밀림'이 '그대로'보다 뚜렷하게 잘 맞아야 인정한다.
         return moved < 0.06 and moved < same * 0.6
 
@@ -856,6 +869,7 @@ class ExploreEngine:
             self._note_steps(counters.read(before))
 
         polls = 0
+        still = 0          # 화면이 클릭 전과 똑같은 채로 몇 번 연속인가
         # 확인 루프가 찍는 프레임을 (시각, 화면) 으로 조금 남긴다.
         # 도착 확인에 **움직임**을 쓰기 위해서다. 아래 _arrived_by_motion 참고.
         seen_frames: deque = deque(maxlen=60)
@@ -872,6 +886,7 @@ class ExploreEngine:
                 return False, grid, False
 
             seen_frames.append((time.time(), after))
+
             light = self._stable_grid(after)
             use_grid = light or grid
             pos = self._track_player(after, use_grid)
@@ -907,6 +922,7 @@ class ExploreEngine:
                 ok = False
 
             if not ok and pos in (frm, None):
+                self._last_same = None
                 # 게임판이 통째로 스크롤해서 플레이어가 화면상 같은 칸에
                 # 남아 있는 경우를 확인한다.
                 key = (use_grid.xs[0], use_grid.ys[0], use_grid.xs[-1], use_grid.ys[-1])
@@ -917,6 +933,23 @@ class ExploreEngine:
                                            before_sig):
                     ok = True
                     scrolled = True
+
+            # **판이 그대로면 클릭이 먹지 않은 것이다.**
+            #
+            # 실측: 실패한 전진에서 '한 칸 밀림' 점수는 0.09~0.25 인데 '그대로'
+            # 점수가 0.001~0.006 이었다. 판이 밀린 것도 아니고 아무것도 바뀌지
+            # 않았다는 뜻이다. 성공한 전진은 '그대로' 점수가 0.07~0.17 이다.
+            # 원본 픽셀로 보면 안 된다 — 디지몬 애니메이션 때문에 늘 조금씩
+            # 다르다. 셀 요약(장애물 비율·평균 밝기)으로 봐야 갈린다.
+            if not ok and self._last_same is not None:
+                if self._last_same < DEAD_CLICK_SAME:
+                    still += 1
+                    if still >= self.cfg.dead_click_polls:
+                        self.log(f"[클릭] 판이 그대로입니다. 이 클릭은 먹지 "
+                                 f"않았습니다 ({direction} {frm}->{to}).")
+                        return False, grid, False
+                else:
+                    still = 0
 
             if ok:
                 confirmed += 1
