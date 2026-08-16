@@ -900,3 +900,23 @@ def test_0열_칩은_한_번_더_보고_정한다():
     sc2 = _scene_with_goals([(2, 0), (1, 3)])       # 다음에도 보였다 -> 진짜다
     eng._confirm_goals(sc2)
     assert (2, 0) in {(d.row, d.col) for d in sc2.goals}
+
+
+def test_걸러낸_칩이_scene_goal_로_되살아나지_않는다():
+    """실측 회귀: analyze 는 가장 확실한 칩 하나를 scene.goal 에도 따로 담는다.
+
+    추적기가 scene.goals 와 cells 만 거르고 scene.goal 을 놔두면, plan_route 의
+    호환용 갈래("goals 가 비었으면 goal 을 쓴다")로 걸러낸 칩이 되살아난다.
+    300초에서 좌이동 5건 중 3건이 '계획=목적지인데 칩 목록은 비어 있음' 이었다.
+    """
+    from digimonup.vision.recognize import Detection, Kind
+    eng = _engine([])
+    eng._motion_valid = True
+    eng._moving_cells = {(2, 0)}                 # 이 칩은 움직인다 = 이펙트
+
+    sc = _scene_with_goals([(2, 0)])
+    sc.goal = Detection(Kind.GOAL, 2, 0, 0.95)   # analyze 가 담아 두는 값
+    eng._confirm_goals(sc)
+
+    assert sc.goals == []
+    assert sc.goal is None, "걸러낸 칩이 scene.goal 에 남아 있으면 안 됩니다"

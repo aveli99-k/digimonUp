@@ -124,9 +124,48 @@ PLAYER_MAX_COL = 1
 ADVANCE_COL = PLAYER_MAX_COL + 1
 
 
-def _bfs(cells: list[list[Kind]], start: Cell, max_col: int = PLAYER_MAX_COL
-         ) -> tuple[dict[Cell, int], dict[Cell, Cell]]:
-    """장애물을 피해 상하좌우로만 이동하는 BFS. (거리, 이전칸) 을 돌려준다.
+# 장애물 하나를 부수는 값을 **걸음수 몇 개어치**로 볼지.
+#
+# 실험으로 확인한 규칙(25장): 인접한 장애물을 클릭하면 부서진다. 플레이어는
+# 들어가지 않고 **걸음수는 들지 않는다.** 대신 부수기 아이템이 1 줄어든다.
+#
+# 그러니 장애물은 벽이 아니라 '부수기 1개짜리 통행료가 붙은 칸'이다.
+# 돌아가면 걸음수를 쓰고, 부수면 부수기를 쓴다. 어느 쪽이 싼지는 **지금 가진
+# 양의 비**로 정하는 것이 맞다. 걸음수 926 / 부수기 198 이면 부수기 하나가
+# 걸음수 4.7개만큼 귀하다.
+DEFAULT_BREAK_COST = 4.0
+# 걸어서 닿는 칩을 쫓아갈 때 낼 수 있는 최대 값(걸음수 환산).
+# 장애물이 통과 가능해진 뒤로는 한도가 없으면 **벽을 여러 겹 뚫고** 칩을
+# 쫓아간다. 칩 하나의 값어치(PICKUP_VALUE=4)보다 조금 넉넉한 선에서 끊는다.
+GOAL_MAX_COST = 8.0
+# 개수를 못 읽을 때 쓰는 범위. 너무 헤프게도, 너무 인색하게도 굴지 않는다.
+BREAK_COST_RANGE = (1.5, 12.0)
+
+
+def break_cost(steps: int | None, breaks: int | None) -> float:
+    """부수기 하나를 걸음수 몇 개어치로 볼지. 남은 양의 비로 정한다.
+
+    부수기가 넉넉하면 싸게 보고 적극적으로 부수며, 얼마 안 남았으면 비싸게 봐서
+    아껴 쓴다. 둘 중 하나라도 못 읽으면 기본값을 쓴다.
+    """
+    if not steps or not breaks:
+        return DEFAULT_BREAK_COST
+    lo, hi = BREAK_COST_RANGE
+    return float(min(hi, max(lo, steps / breaks)))
+
+
+def _bfs(cells: list[list[Kind]], start: Cell, max_col: int = PLAYER_MAX_COL,
+         cost_break: float | None = None
+         ) -> tuple[dict[Cell, float], dict[Cell, Cell]]:
+    """상하좌우로 움직이는 최소 비용 탐색. (비용, 이전칸) 을 돌려준다.
+
+    **장애물도 지나갈 수 있다.** 부수기 1개를 쓰면 되고 걸음수는 들지 않는다
+    (25장 실험). 그래서 장애물 칸에 들어가는 값을 `1 + cost_break` 로 둔다.
+    cost_break 가 None 이면 예전처럼 통과 불가로 본다(테스트와 호환).
+
+    예전에는 장애물을 벽으로 두고 '갈 데가 전혀 없을 때만' 부쉈다. 그러면
+    돌아가느라 걸음수를 쓰면서 정작 공짜인 파괴를 안 쓴다. 실측 300초에서
+    장애물을 부순 것은 단 1회였고, 대신 칩도 없는데 왼쪽으로 도는 이동이 있었다.
 
     max_col 보다 오른쪽 열로는 걸어가지 않는다. 플레이어는 0~1열에만 있기
     때문이다(위 실측 참고). 예전에는 5x5 전체를 걸어 다닌다고 보고 4열까지
@@ -150,28 +189,38 @@ def _bfs(cells: list[list[Kind]], start: Cell, max_col: int = PLAYER_MAX_COL
     처음 발견할 때뿐 아니라 '같은 거리로 또 닿았을 때'도 비교해서, 주운 게
     더 많은 쪽으로 이전 칸을 갈아끼우면 된다.
     """
-    dist: dict[Cell, int] = {start: 0}
+    dist: dict[Cell, float] = {start: 0.0}
     prev: dict[Cell, Cell] = {}
     picked: dict[Cell, int] = {start: 0}       # 여기까지 오면서 주운 것의 합
-    q = deque([start])
-    while q:
-        r, c = q.popleft()
+    # 칸이 열 개뿐이라 우선순위 큐 없이 매번 가장 싼 것을 골라도 넉넉하다.
+    todo = {start}
+    while todo:
+        cur = min(todo, key=lambda c: dist[c])
+        todo.discard(cur)
+        r, c = cur
         for _, dr, dc in DIRS:
             nxt = (r + dr, c + dc)
             nr, nc = nxt
             if not (0 <= nr < N and 0 <= nc <= max_col):
                 continue
-            if not passable(cells[nr][nc]):
-                continue
-            gain = picked[(r, c)] + PICKUP_VALUE.get(cells[nr][nc], 0)
-            if nxt not in dist:
-                dist[nxt] = dist[(r, c)] + 1
-                prev[nxt] = (r, c)
+            kind = cells[nr][nc]
+            if kind == Kind.OBSTACLE:
+                if cost_break is None:
+                    continue                  # 예전 방식: 통과 불가
+                step = 1.0 + cost_break       # 부수고 들어간다
+            else:
+                step = 1.0
+            nd = dist[cur] + step
+            gain = picked[cur] + PICKUP_VALUE.get(kind, 0)
+            old = dist.get(nxt)
+            if old is None or nd < old - 1e-9:
+                dist[nxt] = nd
+                prev[nxt] = cur
                 picked[nxt] = gain
-                q.append(nxt)
-            elif dist[nxt] == dist[(r, c)] + 1 and gain > picked[nxt]:
-                # 같은 거리인데 주운 게 더 많은 길을 찾았다. 그쪽으로 갈아탄다.
-                prev[nxt] = (r, c)
+                todo.add(nxt)
+            elif abs(nd - old) < 1e-9 and gain > picked[nxt]:
+                # 값이 같은데 주운 게 더 많은 길을 찾았다. 그쪽으로 갈아탄다.
+                prev[nxt] = cur
                 picked[nxt] = gain
     return dist, prev
 
@@ -248,7 +297,8 @@ def _row_value(cells, scene, row: int) -> float:
     return total
 
 
-def _advance_for(cells, dist, prev, start: Cell, scene: Scene | None = None):
+def _advance_for(cells, dist, prev, start: Cell, scene: Scene | None = None,
+                 cost_break: float | None = None):
     """전진(스크롤)을 일으키는 경로를 만든다.
 
     전진은 **1열에 서서 2열을 클릭**하는 것 하나뿐이다. 그러려면 그 행의 2열이
@@ -263,12 +313,16 @@ def _advance_for(cells, dist, prev, start: Cell, scene: Scene | None = None):
     """
     best = None
     for r in range(N):
-        if not passable(cells[r][ADVANCE_COL]):
-            continue                      # 이 행은 2열이 막혀 전진할 수 없다
         stand = (r, PLAYER_MAX_COL)
         if stand not in dist:
-            continue                      # 그 행의 1열까지 걸어갈 수 없다
+            continue                      # 그 행의 1열까지 갈 수 없다
         cost = dist[stand]
+        if not passable(cells[r][ADVANCE_COL]):
+            # 2열이 장애물이어도 막힌 것이 아니다. 부수면 지나갈 수 있고
+            # **걸음수는 들지 않는다**(25장). 값만 얹어서 함께 견준다.
+            if cost_break is None:
+                continue
+            cost += cost_break
         value = _row_value(cells, scene, r) if scene is not None else 0
         # 값어치에서 걸음수를 뺀 값이 먼저다. 같으면 **주울 게 있는 쪽**을
         # 고른다. 그래야 칩(4)은 네 칸까지, 아이템(1)은 한 칸까지 옮겨 가서 챙긴다.
@@ -282,7 +336,8 @@ def _advance_for(cells, dist, prev, start: Cell, scene: Scene | None = None):
     return path, stand[0], cost, value
 
 
-def plan_route(scene: Scene, item_max_detour: int = 2) -> Plan:
+def plan_route(scene: Scene, item_max_detour: int = 2,
+               cost_break: float | None = DEFAULT_BREAK_COST) -> Plan:
     """장면을 보고 다음에 무엇을 할지 정한다.
 
     item_max_detour
@@ -294,16 +349,18 @@ def plan_route(scene: Scene, item_max_detour: int = 2) -> Plan:
 
     start: Cell = (scene.player.row, scene.player.col)
     cells = scene.cells
-    dist, prev = _bfs(cells, start)
+    # cost_break=None 은 '부수기를 아예 쓸 수 없다'는 뜻이다(장애물 = 벽).
+    dist, prev = _bfs(cells, start, cost_break=cost_break)
 
     # --- 1순위: 주황칩(필수 아이템) ----------------------------------------
     # 판에 칩이 여러 개일 수 있다. **가장 가까운 것부터** 먹는다. 매번 '가장
     # 진한 칩'을 고르면 프레임마다 목표가 바뀌어 제자리를 오간다.
     goal_cells = [(d.row, d.col) for d in scene.goals]
-    if not goal_cells and scene.goal is not None:
-        goal_cells = [(scene.goal.row, scene.goal.col)]
+    # scene.goal 로 되돌리는 갈래는 두지 않는다. 진실이 두 곳에 있으면
+    # 한쪽만 걸러졌을 때 조용히 어긋난다(실제로 그랬다).
     # 1-a) **걸어서 닿는 칩** (0~1열). 다음 전진에 화면 밖으로 밀려나므로 급하다.
-    walkable_goals = [g for g in goal_cells if g in dist and g != start]
+    walkable_goals = [g for g in goal_cells
+                      if g in dist and g != start and dist[g] <= GOAL_MAX_COST]
     if walkable_goals:
         # 가깝고, 같으면 **더 왼쪽** 칩을 먼저 먹는다.
         # 오른쪽으로 한 칸 전진하면 열 번호가 하나씩 줄어들어 0열 칩이 화면
@@ -342,7 +399,7 @@ def plan_route(scene: Scene, item_max_detour: int = 2) -> Plan:
     # 위아래로 쓰는 것은 거의 언제나 손해다. 지금 갈 수 있는 만큼 전진하고
     # 새 지형을 본 뒤에 다시 정하는 편이 낫다.
     right_plan: Plan | None = None
-    got = _advance_for(cells, dist, prev, start, scene)
+    got = _advance_for(cells, dist, prev, start, scene, cost_break)
     if got is not None:
         path, row, cost, value = got
         reason = (f"{row}행에서 전진 (세로 {cost}칸 이동 후 오른쪽)"

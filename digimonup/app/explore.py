@@ -37,6 +37,7 @@ from digimonup.vision.board import Grid, N, detect_board
 from digimonup.win.emulator_window import (EmulatorWindow, capture_client,
                              enable_dpi_awareness, enumerate_candidates)
 from digimonup.logic.pathfind import PlanKind, plan_route
+from digimonup.logic.pathfind import break_cost as pathfind_break_cost
 from digimonup.vision.recognize import (Detection, Kind, Scene, TemplateSet, analyze,
                        find_blocked_toast,
                        find_green_button, find_top_tab, hsv_of, load_templates,
@@ -606,6 +607,18 @@ class ExploreEngine:
             return True
         return False
 
+    def _break_cost(self) -> float | None:
+        """장애물 하나를 부수는 값을 걸음수 몇 개어치로 볼지.
+
+        부수기를 쓸 수 없으면(설정으로 껐거나, 개수가 0이거나, 눌러도 안
+        부서지는 것을 확인했으면) None. 그러면 경로 계산이 장애물을 벽으로 본다.
+        """
+        if self.break_disabled or not self.cfg.allow_obstacle_break:
+            return None
+        if not self._can_use("break"):
+            return None
+        return pathfind_break_cost(self.counts.steps, self.counts.break_)
+
     # ------------------------------------------------- 칩 묶음 추적
     def _confirm_goals(self, scene: Scene) -> None:
         """검출된 칩을 그대로 쓰지 않고 **추적 중인 묶음**으로 갈아끼운다.
@@ -670,6 +683,14 @@ class ExploreEngine:
         # 움직여서 뺀 칩(wiggling)도 판에서 지워야 경로 계산이 안 쫓아간다.
         ignored = (detected | wiggling | fresh_zero) - valid
         scene.goals = [d for d in scene.goals if (d.row, d.col) in valid]
+        # **scene.goal(가장 확실한 칩 하나) 도 함께 맞춘다.**
+        #
+        # 이걸 빼먹으면 걸러낸 칩이 뒷문으로 되살아난다. plan_route 에는
+        # "goals 가 비었으면 goal 을 쓴다"는 호환용 갈래가 있어서, 추적기가
+        # 이펙트로 판정해 버린 칩을 그대로 쫓아가게 된다. 실측 300초에서
+        # 좌이동 5건 중 3건이 '계획=목적지인데 칩 목록은 비어 있음' 이었다.
+        scene.goal = max(scene.goals, key=lambda d: d.confidence,
+                         default=None) if scene.goals else None
         for r, c in ignored:
             if scene.cells[r][c] == Kind.GOAL:
                 scene.cells[r][c] = Kind.EMPTY
@@ -1136,7 +1157,11 @@ class ExploreEngine:
                     | set(scene.item_kinds))
 
                 # --- 2) 전체 경로 계산 --------------------------------
-                plan = plan_route(scene, self.cfg.item_max_detour)
+                # 장애물은 부수기 1개면 지나가는 칸이다(25장). 그 값을 지금
+                # 가진 양의 비로 정해 넘긴다. 부수기를 쓸 수 없으면 None 을
+                # 넘겨 예전처럼 벽으로 취급한다.
+                plan = plan_route(scene, self.cfg.item_max_detour,
+                                  cost_break=self._break_cost())
 
                 # 분석이 끝난 지금 다시 정지를 확인한다. 분석 도중에 정지를 눌렀다면
                 # 여기서 빠져나가므로 이전 경로가 뒤늦게 실행되지 않는다.
@@ -1177,9 +1202,15 @@ class ExploreEngine:
                     self._check_stop()
                     direction = plan.moves[i] if i < len(plan.moves) else "CLICK"
 
-                    if (plan.kind == PlanKind.BREAK_OBSTACLE
-                            and scene.kind_at(nxt[0], nxt[1]) == Kind.OBSTACLE):
-                        # 마지막 한 칸은 이동이 아니라 장애물 파괴 클릭이다.
+                    if scene.kind_at(nxt[0], nxt[1]) == Kind.OBSTACLE:
+                        # **다음 칸이 장애물이면 이동이 아니라 파괴 클릭이다.**
+                        #
+                        # 실험으로 확인한 규칙(25장): 인접한 장애물을 클릭하면
+                        # 부서진다. 플레이어는 들어가지 않고 걸음수도 들지 않으며,
+                        # 부수기 아이템이 1 줄어든다.
+                        #
+                        # 그래서 경로 한가운데에 장애물이 있어도 괜찮다. 부수고
+                        # 나면 판이 바뀌므로 남은 경로를 버리고 다시 본다.
                         cx, cy = grid.cell_center(nxt[0], nxt[1])
                         self._check_stop()
                         screen = self.window.click_client(cx, cy, self.cfg.move_duration)

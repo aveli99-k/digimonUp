@@ -155,9 +155,10 @@ def test_오른쪽으로_한_칸도_못_가면_세로로_헤매지_않고_부순
         "..X..",
     ])
     plan = plan_route(scene)
-    assert plan.kind == PlanKind.BREAK_OBSTACLE, \
-        f"세로로 헤매지 말고 부숴야 합니다 (지금 계획: {plan.kind.value})"
-    assert scene.cells[plan.target[0]][plan.target[1]] == Kind.OBSTACLE
+    # 장애물은 벽이 아니라 '부수기 1개짜리 통행료가 붙은 칸'이다(25장 실험).
+    # 세로로 헤매지 말고 뚫고 나가는 경로가 나와야 한다.
+    assert plan.path[-1] == (2, 2), f"뚫고 전진해야 합니다: {plan.path}"
+    assert scene.cells[2][2] == Kind.OBSTACLE
 
 
 def test_위아래로_돌아가면_오른쪽에_닿을_때는_부수지_않는다():
@@ -182,7 +183,9 @@ def test_위아래로_돌아가면_오른쪽에_닿을_때는_부수지_않는�
 
 
 # ----------------------------- 4순위: 완전히 갇혔을 때만 장애물 클릭
-def test_사방이_막혔을_때만_장애물을_클릭한다():
+def test_사방이_막혀도_뚫고_나간다():
+    """예전에는 '사방이 막히면 그때만 부순다'였다. 규칙을 실험으로 확인하니
+    장애물은 벽이 아니라 부수기 1개면 지나가는 칸이고 걸음수는 들지 않는다."""
     scene = make_scene([
         ".X...",
         "XPX..",
@@ -191,13 +194,16 @@ def test_사방이_막혔을_때만_장애물을_클릭한다():
         ".....",
     ])
     plan = plan_route(scene)
-    assert plan.kind == PlanKind.BREAK_OBSTACLE
+    assert len(plan.path) >= 2, "가만히 있으면 안 된다"
+    nxt = plan.path[1]
+    assert scene.cells[nxt[0]][nxt[1]] == Kind.OBSTACLE,         f"둘러싸였으면 뚫어야 합니다: {plan.path}"
     assert scene.cells[plan.target[0]][plan.target[1]] == Kind.OBSTACLE
     assert plan.path[-1] == plan.target
     assert all(scene.cells[r][c] != Kind.OBSTACLE for r, c in plan.path[:-1])
 
 
 def test_가로_3연속_XXX_는_가운데를_부순다():
+    # 부수기를 아예 못 쓸 때(cost_break=None)의 최후 규칙이다.
     """3개 연속 장애물 특수 조건은 가로 배열에만 적용한다."""
     scene = make_scene([
         "XXX..",
@@ -206,13 +212,14 @@ def test_가로_3연속_XXX_는_가운데를_부순다():
         ".....",
         ".....",
     ])
-    plan = plan_route(scene)
+    plan = plan_route(scene, cost_break=None)
     assert plan.kind == PlanKind.BREAK_OBSTACLE
     assert plan.target == (0, 1), "가로 XXX 의 가운데 칸을 골라야 한다"
     assert "가운데" in plan.reason
 
 
 def test_XXX_가운데에_닿을_수_없으면_같은_줄의_끝을_부순다():
+    # 부수기를 아예 못 쓸 때(cost_break=None)의 최후 규칙이다.
     scene = make_scene([
         ".X...",
         "XPXXX",
@@ -220,13 +227,14 @@ def test_XXX_가운데에_닿을_수_없으면_같은_줄의_끝을_부순다():
         ".....",
         ".....",
     ])
-    plan = plan_route(scene)
+    plan = plan_route(scene, cost_break=None)
     assert plan.kind == PlanKind.BREAK_OBSTACLE
     assert plan.target == (1, 2)
     assert "가로 3연속" in plan.reason
 
 
 def test_세로_3연속은_특수_조건이_아니다():
+    # 부수기를 아예 못 쓸 때(cost_break=None)의 최후 규칙이다.
     scene = make_scene([
         ".XX..",
         "XPX..",
@@ -235,7 +243,7 @@ def test_세로_3연속은_특수_조건이_아니다():
         ".....",
     ])
     assert pathfind.horizontal_triples(scene.cells) == set()
-    plan = plan_route(scene)
+    plan = plan_route(scene, cost_break=None)
     assert plan.kind == PlanKind.BREAK_OBSTACLE
 
 
@@ -355,16 +363,36 @@ def test_칩이_같은_거리면_더_오른쪽_칩을_고른다():
     assert plan.target in {(0, 1), (2, 1)}
 
 
-def test_막힌_칩은_건너뛰고_오른쪽으로_전진한다():
+def test_너무_비싼_칩은_쫓아가지_않는다():
+    """장애물이 통과 가능해진 뒤로는 **한도가 없으면 벽을 여러 겹 뚫고** 칩을
+    쫓아간다. 칩 하나의 값어치보다 비싸면 그냥 전진하는 편이 낫다.
+
+    아래는 어느 쪽으로 가도 장애물 두 겹이라 값이 11 (부수기 2 x 5 + 걸음 1) 로
+    한도 8 을 넘는다. 벽 한 겹뿐이라면 뚫고 먹는 것이 맞다(아래 테스트).
+    """
     scene = _scene_with_chips([
-        "XXXXX",
-        "XG.XX",
-        "XXXXX",
-        "..P..",
+        "XG...",
+        "XX...",
+        "XX...",
+        ".P...",
         ".....",
     ])
     plan = plan_route(scene)
-    assert plan.kind == PlanKind.RIGHT_EDGE
+    assert plan.kind == PlanKind.RIGHT_EDGE,         f"벽 두 겹 뒤의 칩을 쫓아가면 안 됩니다: {plan.describe()}"
+
+
+def test_벽_한_겹_뒤의_칩은_뚫고_먹는다():
+    """부수기는 걸음수를 쓰지 않으므로(25장) 한 겹은 뚫는 편이 싸다."""
+    scene = _scene_with_chips([
+        ".....",
+        ".G...",
+        ".X...",
+        ".P...",
+        ".....",
+    ])
+    plan = plan_route(scene)
+    assert plan.kind == PlanKind.GOAL
+    assert plan.path[-1] == (1, 1)
 
 
 def test_칩이_없으면_오른쪽_전진():
