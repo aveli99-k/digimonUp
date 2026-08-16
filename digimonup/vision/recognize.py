@@ -96,11 +96,18 @@ class Scene:
 # --------------------------------------------------------------------------
 
 class TemplateSet:
-    """templates/explore/<이름>/ 안의 모든 PNG 를 불러 둔다."""
+    """<기준 폴더>/<이름>/ 안의 모든 PNG 를 불러 둔다.
 
-    def __init__(self, name: str, allow_flip: bool = False):
+    기준 폴더는 기본이 templates/explore/ 다. 던전처럼 다른 기능의 템플릿은
+    base_dir 로 자기 폴더를 넘긴다. 불러오기·정규화·캐시는 기능이 달라도
+    똑같아서, 여기 한 벌만 두고 폴더만 갈아끼운다.
+    """
+
+    def __init__(self, name: str, allow_flip: bool = False,
+                 base_dir: str = TEMPLATE_DIR):
         self.name = name
         self.allow_flip = allow_flip
+        self.base_dir = base_dir
         self.images: list[np.ndarray] = []
         self.paths: list[str] = []
         self.reload()
@@ -108,7 +115,7 @@ class TemplateSet:
     def reload(self) -> None:
         self.images, self.paths = [], []
         self._prepared = {}
-        folder = os.path.join(TEMPLATE_DIR, self.name)
+        folder = os.path.join(self.base_dir, self.name)
         for path in sorted(glob.glob(os.path.join(folder, "*.png"))):
             img = imread_bgr(path)
             if img is not None and img.size:

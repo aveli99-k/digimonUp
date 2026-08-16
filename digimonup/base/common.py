@@ -119,6 +119,14 @@ def find_template(screen: np.ndarray, tpl: np.ndarray, confidence: float,
     return True, (loc[0] + tw // 2, loc[1] + th // 2), score
 
 
+class Stopped(Exception):
+    """정지 요청. 진행 중인 모든 동작을 즉시 접는다.
+
+    엔진마다 따로 두지 않는다. 정지의 의미가 기능마다 다를 이유가 없고,
+    두 벌이 되면 한쪽에서 던진 것을 다른 쪽이 못 잡는 일이 생긴다.
+    """
+
+
 def is_stop_key_pressed(vk_code: int) -> bool:
     """전역 단축키 감지 (창 포커스와 무관)."""
     return bool(ctypes.windll.user32.GetAsyncKeyState(vk_code) & 0x8000)

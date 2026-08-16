@@ -32,7 +32,7 @@ import numpy as np
 from digimonup.logic import chiptrack
 from digimonup.vision import counters
 from digimonup.vision import overlay
-from digimonup.base.common import is_stop_key_pressed, vk_of
+from digimonup.base.common import Stopped, is_stop_key_pressed, vk_of
 from digimonup.vision.board import Grid, N, detect_board
 from digimonup.win.emulator_window import (EmulatorWindow, capture_client,
                              enable_dpi_awareness, enumerate_candidates)
@@ -157,10 +157,6 @@ class ExploreConfig:
 # 셀 요약이 이만큼도 안 바뀌었으면 '판이 그대로'로 본다.
 # 실측: 먹히지 않은 클릭 0.001~0.006 / 성공한 전진 0.07~0.17.
 DEAD_CLICK_SAME = 0.02
-
-
-class Stopped(Exception):
-    """정지 요청. 진행 중인 모든 동작을 즉시 접는다."""
 
 
 @dataclass
