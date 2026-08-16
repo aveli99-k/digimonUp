@@ -128,11 +128,11 @@ python tools\capture_explore.py
 맞았던 적도(진짜 칩이었다, 정말 갇혀 있었다) 진짜 버그였던 적도 있었습니다.
 
 ```bash
-python toolsecord.py 300
+python tools\record.py 300
 ```
 
 5분 동안 돌면서 사이클마다 **인식 결과와 계산한 경로를 그린 그림**을
-`debugecord\` 에 남깁니다. 이상한 동작을 보면 그때가 몇 초쯤이었는지만
+`debug\record\` 에 남깁니다. 이상한 동작을 보면 그때가 몇 초쯤이었는지만
 기억해 두었다가 그 무렵 파일을 열어 보면 됩니다. 파일 이름에 시각과 판단이
 들어 있고, `log.txt` 에 모든 판단이 시각과 함께 적힙니다.
 
