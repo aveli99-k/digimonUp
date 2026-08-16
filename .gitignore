@@ -21,6 +21,10 @@ check_result.png
 # 바로가기 (create_shortcut.ps1 로 만든다)
 *.lnk
 
+# Claude 설정 (개인 작업 환경이라 저장소에 넣지 않는다)
+.claude/
+CLAUDE.md
+
 # 편집기
 .vscode/
 .idea/
