@@ -79,7 +79,9 @@ def _frame(cell, **kw):
 def test_이전_위치의_잔상을_이동_성공으로_처리하지_않는다():
     """RIGHT 를 눌렀는데 계속 이전 칸에서만 검출되면 성공이 아니다."""
     stay = _frame((1, 1))
-    eng = _engine([stay] * 40)
+    # 안내문이 뜨는 시점(0.41초)을 지나야 '먹지 않았다'고 단정하므로
+    # 제한 시간을 그보다 넉넉히 준다.
+    eng = _engine([stay] * 200, move_timeout_sec=2.0)
     grid = board.detect_board(stay)
 
     ok, _, _ = eng._do_move(grid, (1, 1), (1, 2), "RIGHT")
@@ -93,7 +95,7 @@ def test_이전_위치의_잔상을_이동_성공으로_처리하지_않는다()
 def test_다시_누르기를_끄면_클릭은_한_번뿐이다():
     """두 번 움직일 위험이 없는지 확인하는 자리이기도 하다."""
     stay = _frame((1, 1))
-    eng = _engine([stay] * 40, dead_click_retries=0)
+    eng = _engine([stay] * 200, dead_click_retries=0, move_timeout_sec=2.0)
     grid = board.detect_board(stay)
 
     ok, _, _ = eng._do_move(grid, (1, 1), (1, 2), "RIGHT")
@@ -878,3 +880,23 @@ def test_걸음수를_못_읽으면_다른_신호에_맡긴다():
     eng = _engine([])
     assert eng._note_steps(Counters(steps=None)) is False
     assert eng._note_steps(None) is False
+
+
+def test_0열_칩은_한_번_더_보고_정한다():
+    """틀렸을 때의 대가가 방향에 따라 다르다.
+
+    앞쪽 칩이 가짜면 어차피 전진하던 길이라 손해가 없지만, 0열 칩은 왼쪽으로
+    되돌아가야 하므로 가짜였다면 걸음수를 두 번 버린다.
+    """
+    eng = _engine([])
+    eng._motion_valid = True
+    eng._moving_cells = set()
+
+    sc = _scene_with_goals([(2, 0), (1, 3)])
+    eng._confirm_goals(sc)
+    assert sorted((d.row, d.col) for d in sc.goals) == [(1, 3)], \
+        "0열 칩은 첫 사이클에 목표로 삼지 않는다"
+
+    sc2 = _scene_with_goals([(2, 0), (1, 3)])       # 다음에도 보였다 -> 진짜다
+    eng._confirm_goals(sc2)
+    assert (2, 0) in {(d.row, d.col) for d in sc2.goals}

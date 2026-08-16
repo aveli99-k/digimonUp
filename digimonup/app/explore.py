@@ -97,9 +97,15 @@ class ExploreConfig:
     # 알아채 확인 루프가 더 오래 돌았고, 실주행에서 이득이 없었다.
     # 검사 자체는 띠만 보도록 고쳐 이미 절반이 됐다(67ms -> 35ms).
     toast_check_every: int = 1
-    # 판이 그대로인 채로 이만큼 연속 확인되면 '클릭이 안 먹었다'로 보고 접는다.
-    # 이 검사는 도착이 확인되지 않은 폴링에서만 도므로 3이면 충분하다.
+    # 판이 그대로인 채로 이만큼 연속 확인되면 '클릭이 안 먹었다'로 본다.
     dead_click_polls: int = 3
+    # 다만 **클릭한 지 이만큼 지나기 전에는 단정하지 않는다.**
+    #
+    # 실측: '이동할 수 없습니다' 안내문은 클릭 후 0.40~0.42초에 뜬다(9건 전부).
+    # 0.2초 만에 '안 먹었다'고 판단하면 사실은 게임이 거부한 클릭을 못 먹은
+    # 것으로 오해해 **막힌 칸을 한 번 더 누른다.** 그러면 안내문이 또 떠서
+    # 사라지길 2초 더 기다린다.
+    dead_click_wait_sec: float = 0.6
     # 먹지 않은 클릭을 몇 번까지 다시 눌러 볼지.
     #
     # 아무 일도 안 일어났으므로 두 번 움직일 위험이 없고, 판을 다시 인식하는
@@ -222,6 +228,8 @@ class ExploreEngine:
         self._steps_min: int | None = None
         # 직전 폴링의 '판이 그대로' 점수 (_scrolled_one_cell 이 채운다).
         self._last_same: float | None = None
+        # 직전 사이클에 보인 0열 칩. 되돌아가야 하는 칩은 두 번 봐야 인정한다.
+        self._prev_zero: set = set()
 
     # 걸음수가 이만큼 넘게 늘면 '채워 넣었다'로 보고 기준을 다시 잡는다.
     _STEPS_REFILL = 5
@@ -635,8 +643,24 @@ class ExploreEngine:
         # 둘 다 맞으면 두 프레임을 기다리지 않고 바로 잠근다.
         no_effect = self._motion_valid and not wiggling
 
+        # **0열 칩만은 한 번 더 확인한다.**
+        #
+        # 틀렸을 때의 대가가 방향에 따라 다르다. 앞쪽(2열 이상) 칩이 가짜면
+        # 어차피 전진하던 길이라 손해가 없다. 그런데 0열 칩은 **왼쪽으로
+        # 되돌아가야** 하므로, 가짜였다면 걸음수를 두 번 버린다.
+        # 사용자가 계속 보고한 증상이 정확히 '유령칩 때문에 좌로 이동'이었다.
+        fresh_zero = {c for c in detected
+                      if c[1] == 0 and c not in self.chips.chips
+                      and c not in self._prev_zero}
+        self._prev_zero = {c for c in detected if c[1] == 0}
+        detected -= fresh_zero
+
         was_locked = self.chips.locked
         valid = self.chips.update(detected, trust_now=no_effect)
+        if fresh_zero:
+            scene.notes.append(
+                f"0열 칩 {sorted(fresh_zero)} 은(는) 되돌아가야 하므로 "
+                f"한 번 더 보고 정합니다.")
 
         if not was_locked and valid:
             self.log(f"[칩] 묶음을 새로 읽었습니다: {sorted(valid)} "
@@ -644,7 +668,7 @@ class ExploreEngine:
 
         # 판에서 지울 칸은 **검출된 것 전부** 를 기준으로 따진다.
         # 움직여서 뺀 칩(wiggling)도 판에서 지워야 경로 계산이 안 쫓아간다.
-        ignored = (detected | wiggling) - valid
+        ignored = (detected | wiggling | fresh_zero) - valid
         scene.goals = [d for d in scene.goals if (d.row, d.col) in valid]
         for r, c in ignored:
             if scene.cells[r][c] == Kind.GOAL:
@@ -848,6 +872,7 @@ class ExploreEngine:
 
         cx, cy = grid.cell_center(to[0], to[1])
         self._check_stop()
+        clicked_at = time.time()
         screen = self.window.click_client(cx, cy, self.cfg.move_duration)
         if screen is None:
             self.log(f"[클릭] 실패: 창이 유효하지 않거나 좌표가 범위를 벗어났습니다 ({cx},{cy})")
@@ -951,7 +976,8 @@ class ExploreEngine:
             # 않았다는 뜻이다. 성공한 전진은 '그대로' 점수가 0.07~0.17 이다.
             # 원본 픽셀로 보면 안 된다 — 디지몬 애니메이션 때문에 늘 조금씩
             # 다르다. 셀 요약(장애물 비율·평균 밝기)으로 봐야 갈린다.
-            if not ok and self._last_same is not None:
+            if (not ok and self._last_same is not None
+                    and time.time() - clicked_at >= self.cfg.dead_click_wait_sec):
                 if self._last_same < DEAD_CLICK_SAME:
                     still += 1
                     if still >= self.cfg.dead_click_polls:
@@ -964,6 +990,13 @@ class ExploreEngine:
                         # 실측: 목표가 강조칸(게임이 갈 수 있다고 표시한 칸)이고
                         # 바로 옆인데도 안 먹는 경우가 있었다. 논리가 아니라
                         # 클릭이 전달되지 않은 것이다.
+                        # 다시 누르기 전에 안내문을 반드시 확인한다.
+                        # 안내문이 떴다면 그 칸은 막힌 것이라, 또 누르면 안내문만
+                        # 한 번 더 띄우고 2초를 더 기다리게 된다(실측: 다시 누른
+                        # 12건 중 9건이 직후에 안내문이었다).
+                        if self._toast_visible(after):
+                            self._wait_toast_clear()
+                            return False, grid, False
                         if retries < self.cfg.dead_click_retries:
                             retries += 1
                             still = 0
@@ -972,7 +1005,8 @@ class ExploreEngine:
                                      f"{direction} {frm}->{to}")
                             self._check_stop()
                             self.window.click_client(cx, cy, self.cfg.move_duration)
-                            deadline = time.time() + self.cfg.move_timeout_sec
+                            clicked_at = time.time()
+                            deadline = clicked_at + self.cfg.move_timeout_sec
                             time.sleep(self.cfg.click_settle_sec)
                             continue
                         self.log(f"[클릭] 판이 그대로입니다. 이 클릭은 먹지 "
