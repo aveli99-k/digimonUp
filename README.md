@@ -210,7 +210,7 @@ python tools\capture_counters.py
 | `tools/` | 창 진단, 템플릿 캡처, 인식 점검, 아이콘 생성 |
 | `scripts/` | 실행·빌드·바로가기 스크립트 |
 | `assets/` | 앱 아이콘 (`tools/make_icon.py` 로 만듭니다) |
-| `tests/` | 자동 테스트 (176개) |
+| `tests/` | 자동 테스트 (186개) |
 
 층은 아래에서 위로만 의존합니다. `logic` 은 화면도 창도 모르기 때문에
 에뮬레이터 없이 그대로 테스트할 수 있습니다.
