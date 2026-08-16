@@ -549,3 +549,49 @@ def test_아이템_템플릿_점수가_충분히_갈린다():
         f"진짜 {min(hit):.2f} 와 나머지 {max(miss):.2f} 의 간격이 좁습니다"
     assert max(miss) < recognize.ITEM_TEMPLATE_MIN < min(hit), \
         f"기준 {recognize.ITEM_TEMPLATE_MIN} 이 둘 사이에 있지 않습니다"
+
+
+# ------------------- 있을 수 없는 플레이어 자리는 버린다 — 실측 회귀
+def _cells(rows):
+    sym = {".": Kind.EMPTY, "X": Kind.OBSTACLE, "G": Kind.GOAL}
+    return [[sym[ch] for ch in row] for row in rows]
+
+
+def test_장애물_위의_플레이어는_버린다():
+    """실측 사고: 디지몬이 (1,1) 에 있는데 (3,0) 피라미드 위로 잡혔고,
+    그 자리에서 경로를 계산해 실제 위치와 무관한 칸들을 눌렀다."""
+    from digimonup.vision.recognize import Detection, _reject_impossible_player
+    cells = _cells([".....", ".....", ".....", "X....", "....."])
+    notes = []
+    got = _reject_impossible_player(
+        Detection(Kind.PLAYER, 3, 0, 0.9), cells, [], notes)
+    assert got is None
+    assert notes and "장애물" in notes[0]
+
+
+def test_강조칸에서_먼_플레이어는_버린다():
+    """게임은 플레이어 주변만 밝게 칠한다. 멀리 잡혔으면 그건 플레이어가 아니다."""
+    from digimonup.vision.recognize import Detection, _reject_impossible_player
+    cells = _cells([".....", ".....", ".....", ".....", "....."])
+    notes = []
+    got = _reject_impossible_player(
+        Detection(Kind.PLAYER, 4, 0, 0.9), cells,
+        [(0, 1), (1, 1), (1, 0)], notes)          # 강조는 위쪽에 몰려 있다
+    assert got is None
+    assert notes and "강조칸" in notes[0]
+
+
+def test_강조칸_한가운데의_플레이어는_그대로_둔다():
+    from digimonup.vision.recognize import Detection, _reject_impossible_player
+    cells = _cells([".....", ".....", ".....", ".....", "....."])
+    det = Detection(Kind.PLAYER, 1, 1, 0.9)
+    got = _reject_impossible_player(det, cells, [(0, 1), (1, 0), (2, 1)], [])
+    assert got is det
+
+
+def test_강조칸이_없으면_위치만_보고_판단한다():
+    """강조칸이 안 보이는 프레임도 있다. 그때는 장애물 검사만 한다."""
+    from digimonup.vision.recognize import Detection, _reject_impossible_player
+    cells = _cells([".....", ".....", ".....", ".....", "....."])
+    det = Detection(Kind.PLAYER, 4, 4, 0.9)
+    assert _reject_impossible_player(det, cells, [], []) is det

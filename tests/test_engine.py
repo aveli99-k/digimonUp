@@ -752,16 +752,25 @@ def test_전진하면_칩_자리를_따라간다():
     assert [(d.row, d.col) for d in sc.goals] == [(2, 3)]
 
 
-def test_한_프레임_놓쳐도_칩을_버리지_않는다():
-    """다 온 칩을 한 번 못 봤다고 놓으면 눈앞에서 버리는 셈이다."""
-    from digimonup.vision.recognize import Kind
-    eng = _engine([])
-    _lock(eng, [(2, 2)])
+def test_안_보이는_칩은_바로_버린다():
+    """실측 회귀: 안 보이는 칩을 기억해 두는 것이 유령의 원천이었다.
 
-    sc = _scene_with_goals([])           # 이번 프레임엔 안 보였다
+    300초에 '칩을 먹었다'고 판단한 22건 중 17건이 헛것이었고(상단 보유량이 안
+    올랐다) 유령 칸은 전부 플레이어가 선 자리였다. 없어진 칩을 기억해 두었다가
+    전진으로 그 자리가 밀려와 겹치는 순간 '먹었다'고 처리한 것이다.
+
+    기억이 필요했던 이유는 검출을 못 믿어서였는데 지금은 믿을 수 있다
+    (12프레임 눈 대조: 오탐 0 / 미검출 0).
+    """
+    eng = _engine([])
+    eng._motion_valid = True
+    eng._moving_cells = set()
+    eng._confirm_goals(_scene_with_goals([(2, 2)]))
+
+    sc = _scene_with_goals([])           # 이번 프레임엔 안 보인다
     eng._confirm_goals(sc)
-    assert [(d.row, d.col) for d in sc.goals] == [(2, 2)]
-    assert sc.cells[2][2] is Kind.GOAL
+    assert sc.goals == [], "안 보이는 칩을 목표로 남기면 안 됩니다"
+    assert not eng.chips.locked
 
 
 def test_계속_안_보이면_없어진_것으로_본다():

@@ -747,6 +747,9 @@ CARD_ORANGE_MIN = 0.04
 CARD_CENTER_SLACK = 0.22
 # 강조칸 역산을 '확실하다'고 볼 겹침 비율. 실측: 맞는 칸 0.75~1.00.
 HIGHLIGHT_SURE_MIN = 0.6
+# 플레이어는 강조칸 무리에서 이보다 멀 수 없다.
+# 강조 범위는 이동력에 따라 넓어지지만 플레이어는 늘 그 한가운데에 있다.
+PLAYER_HIGHLIGHT_MAX_DIST = 2
 
 
 def item_kind_of(label: str) -> str:
@@ -849,6 +852,39 @@ def _match_cells(img: np.ndarray, grid: Grid, cells, tpl: dict[str, TemplateSet]
     return out
 
 
+def _reject_impossible_player(player, cells, highlights, notes):
+    """있을 수 없는 자리에 잡힌 플레이어는 **버린다**.
+
+    검출은 드물게 틀린다. 실측한 사고: 디지몬이 (1,1) 에 있는데 (3,0) 피라미드
+    위로 잡혔고, 그 자리에서 경로를 계산해 실제 위치와 무관한 칸들을 눌렀다.
+    밖에서 보면 '있지도 않은 칩을 향해 엉뚱하게 좌우로 움직이는' 모습이 된다.
+    사용자가 유령칩이라고 부른 증상이 이것이었다.
+
+    틀린 것을 늘 막을 수는 없어도, **불가능한 자리로 행동하는 것은 거부**할 수
+    있다. 여기서 None 을 돌려주면 그 사이클은 아무것도 하지 않고 다시 본다.
+    한 사이클 쉬는 값은 싸고, 엉뚱한 클릭의 값은 비싸다.
+
+    불가능한 자리
+      1. 장애물 칸        - 피라미드 위에 설 수 없다
+      2. 강조칸에서 멀다  - 게임은 플레이어 주변만 밝게 칠한다(20장).
+                            강조칸이 하나라도 보이는데 두 칸 넘게 떨어져 있으면
+                            그건 플레이어가 아니다.
+    """
+    if player is None:
+        return None
+    r, c = player.row, player.col
+    if cells[r][c] == Kind.OBSTACLE:
+        notes.append(f"플레이어로 잡힌 ({r},{c}) 은 장애물입니다. 버리고 다시 봅니다.")
+        return None
+    if highlights:
+        near = min(abs(r - a) + abs(c - b) for a, b in highlights)
+        if near > PLAYER_HIGHLIGHT_MAX_DIST:
+            notes.append(f"플레이어로 잡힌 ({r},{c}) 이 강조칸에서 {near}칸 "
+                         f"떨어져 있습니다. 버리고 다시 봅니다.")
+            return None
+    return player
+
+
 def analyze(img: np.ndarray, grid: Grid, tpl: dict[str, TemplateSet],
             orange_goal_without_template: bool = False,
             motion_cell: tuple[int, int] | None = None) -> Scene:
@@ -939,6 +975,7 @@ def analyze(img: np.ndarray, grid: Grid, tpl: dict[str, TemplateSet],
                    if cells[r][c] == Kind.OBSTACLE})
     player = detect_player(img, grid, tpl, highlights, hsv, exclude=occupied,
                            cells=cells, motion_cell=motion_cell)
+    player = _reject_impossible_player(player, cells, highlights, notes)
     if player is None:
         notes.append("플레이어를 찾지 못했습니다.")
 

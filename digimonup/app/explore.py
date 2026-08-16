@@ -37,7 +37,8 @@ from digimonup.base.common import Stopped, is_stop_key_pressed, vk_of
 from digimonup.vision.board import Grid, N, detect_board
 from digimonup.win.emulator_window import (EmulatorWindow, capture_client,
                              enable_dpi_awareness, enumerate_candidates)
-from digimonup.logic.pathfind import ADVANCE_COL, PlanKind, plan_route
+from digimonup.logic.pathfind import (ADVANCE_COL, PLAYER_MAX_COL, PlanKind,
+                                      plan_route)
 from digimonup.logic.pathfind import break_cost as pathfind_break_cost
 from digimonup.vision.recognize import (Detection, Kind, Scene, TemplateSet, analyze,
                        find_blocked_toast,
@@ -231,6 +232,9 @@ class ExploreEngine:
         self._motion_valid = False
         # 지금까지 본 걸음수 최솟값. 이동 성공을 가려내는 데 쓴다(_note_steps).
         self._steps_min: int | None = None
+        # 이번 이동에서 '무슨 일이 있었는지 확실치 않다'는 표시.
+        # 남은 경로를 버리고 다시 인식해야 한다는 뜻이다(스크롤과는 다르다).
+        self._path_dirty = False
         # 직전 폴링의 '판이 그대로' 점수 (_scrolled_one_cell 이 채운다).
         self._last_same: float | None = None
         # 직전 사이클에 보인 0열 칩. 되돌아가야 하는 칩은 두 번 봐야 인정한다.
@@ -763,13 +767,11 @@ class ExploreEngine:
         for r, c in ignored:
             if scene.cells[r][c] == Kind.GOAL:
                 scene.cells[r][c] = Kind.EMPTY
-        # 검출은 놓쳤지만 추적 중인 칩은 판에 그대로 살려 둔다.
-        # 한 프레임 안 보인다고 목표를 놓으면 다 온 칩을 눈앞에서 버린다.
-        for r, c in valid - detected:
-            if scene.cells[r][c] == Kind.EMPTY:
-                scene.cells[r][c] = Kind.GOAL
-                scene.goals.append(Detection(Kind.GOAL, r, c, 0.5,
-                                             note="추적 중 (이번 프레임은 못 봄)"))
+        # 안 보이는 칩을 판에 살려 두지 않는다.
+        #
+        # 예전에는 '한 프레임 놓쳤다고 목표를 놓으면 다 온 칩을 버린다'며
+        # 살려 뒀다. 그런데 그것이 유령의 원천이었다(chiptrack.MISS_LIMIT 참고).
+        # 검출이 정확한 지금은 **보이는 것만** 목표로 삼는다.
         if wiggling:
             scene.notes.append(
                 f"칩 {sorted(wiggling)} 은(는) 그림이 움직이고 있습니다. "
@@ -962,6 +964,7 @@ class ExploreEngine:
         그때는 고속 경로를 접고 전체 재인식을 해야 한다.
         """
         self._check_stop()
+        self._path_dirty = False
         before = self._capture()
         if before is None:
             return False, grid, False
@@ -1040,10 +1043,20 @@ class ExploreEngine:
                 # 제한을 다 썼다. 걸음수는 이동당 정확히 1 줄고 0.53~2.10초
                 # 안에 화면에 반영된다(실측 22건, 전부 1씩).
                 #
-                # 무엇이 어떻게 바뀌었는지는 모르므로 스크롤한 것으로 치고
-                # 남은 경로를 버린다. 그래야 다음 클릭이 엉뚱한 칸으로 가지 않는다.
+                # 무엇이 어떻게 바뀌었는지는 모르므로 남은 경로는 버린다.
+                # 그래야 다음 클릭이 엉뚱한 칸으로 가지 않는다.
+                #
+                # **다만 '스크롤했다'로 치면 안 된다.** 판이 밀리는 것은
+                # 1열에서 오른쪽을 눌렀을 때뿐이다(19장). 세로 이동까지 스크롤로
+                # 세면 칩 추적기가 칩 자리를 한 열씩 더 밀어 버리고, 그러면
+                # 없는 칩이 플레이어 자리로 밀려와 '먹었다'고 처리된다.
+                #
+                # 실측: '칩을 먹었다'고 판단한 10건 중 5건이 헛것이었고(상단
+                # 보유량이 2.5초 동안 한 픽셀도 안 바뀌었다) 그 칸은 전부
+                # 플레이어가 선 자리였다.
                 ok = True
-                scrolled = True
+                scrolled = (direction == "RIGHT" and frm[1] == PLAYER_MAX_COL)
+                self._path_dirty = True
             elif self._arrived_by_motion(seen_frames, use_grid, to):
                 # 색 기반 빠른 추적은 가끔 말이 안 되는 칸을 낸다.
                 # 실측: 실패한 이동 12건에서 (3,1)->(2,0), (4,1)->(4,4) 처럼
@@ -1331,6 +1344,11 @@ class ExploreEngine:
                         break     # 고속 경로 폐기 -> 바깥 루프에서 전체 재인식
                     current = nxt
                     self.break_fail_streak = 0   # 길이 열렸다면 다시 시도해 볼 만하다
+                    if self._path_dirty and not scrolled:
+                        # 이동은 했는데 무슨 일인지 확실치 않다. 남은 경로만 버린다.
+                        self.log("[경로] 이동은 확인했지만 판이 어떻게 바뀌었는지 "
+                                 "확실치 않아 다시 인식합니다.")
+                        break
                     if scrolled:
                         self._scrolls_since += 1
                         # 판이 통째로 밀렸다. 남은 경로의 칸 번호는 이제 딴 곳을
