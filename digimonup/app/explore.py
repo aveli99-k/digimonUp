@@ -90,6 +90,12 @@ class ExploreConfig:
     # 이동 불가 안내
     toast_min: float = 0.65
     toast_clear_repeat: int = 2
+    # 이동 확인 루프에서 안내문을 몇 번에 한 번 볼지.
+    #
+    # 1(매번)로 둔다. 2 로 건너뛰어 봤더니 검사 횟수는 줄었지만 안내문을 늦게
+    # 알아채 확인 루프가 더 오래 돌았고, 실주행에서 이득이 없었다.
+    # 검사 자체는 띠만 보도록 고쳐 이미 절반이 됐다(67ms -> 35ms).
+    toast_check_every: int = 1
 
     # 목적지 = 주황칩(필수 아이템)
     # 탐사에는 종착점이 없지만, 판에 나오는 주황칩은 반드시 먹어야 한다.
@@ -191,6 +197,9 @@ class ExploreEngine:
         # 이번 사이클에 이펙트로 의심된 칩 수. 있으면 계획을 세우지 않고
         # 화면이 가라앉기를 기다렸다 다시 본다.
         self._ghost_suspect = 0
+        # 이번 사이클에 움직임 검사가 쓸 만한 결과를 냈는가.
+        # (판이 스크롤 중이었거나 캡처가 모자라면 False)
+        self._motion_valid = False
 
     # ---------------------------------------------------------------- 정지
     def stop(self) -> None:
@@ -428,6 +437,8 @@ class ExploreEngine:
         if self.cfg.motion_frames < 2:
             return None                 # 움직임 인식 끔
         self._board_animating = False
+        self._motion_valid = False
+
         # 두 번까지 시도한다. 첫 묶음은 스크롤 직후라 화면 전체가 움직이는
         # 중일 때가 많아 못 쓴다(실측: 사이클의 절반에서 움직임을 못 썼다).
         # 그때는 조금 더 기다렸다가 한 번 더 찍으면 판이 가라앉아 있다.
@@ -446,6 +457,7 @@ class ExploreEngine:
                 self._board_animating = True
                 continue                # 아직 스크롤 중이다. 한 번 더 기다린다.
             self._board_animating = False
+            self._motion_valid = True
             # 판이 가라앉은 지금 움직이는 칸 = 디지몬 + 연출.
             # 거기서 잡힌 칩은 획득 이펙트다(_confirm_goals 에서 쓴다).
             self._moving_cells = {c for c, v in ratios.items()
@@ -454,6 +466,92 @@ class ExploreEngine:
                 return cell
             return None
         return None
+
+    def _steps_dropped(self, img: np.ndarray, before: int) -> bool:
+        """걸음수가 줄었는가. 못 읽으면 False (다른 신호에 맡긴다)."""
+        got = counters.read(img)
+        return bool(got and got.steps is not None and got.steps < before)
+
+    def _arrived_by_motion(self, frames, grid: Grid,
+                           to: tuple[int, int]) -> bool:
+        """**움직이는 칸이 목표 칸 하나뿐**이면 도착한 것으로 본다.
+
+        판이 멈춰 있을 때 움직이는 것은 디지몬뿐이다(20장). 색 기반 빠른
+        추적과 달리 생김새에 기대지 않아 헛값이 없다.
+
+        확인 루프는 어차피 폴링마다 캡처하므로, 그중 motion_gap_sec 만큼
+        떨어진 두 장을 골라 쓰면 추가 촬영이 필요 없다. 간격이 좁으면 제자리
+        애니메이션의 변화가 작아 놓친다(실측: 0.18초 5/5, 0.08초 3/5).
+        """
+        if len(frames) < 2 or grid is None:
+            return False
+        newest_t, newest = frames[-1]
+        for t, old in reversed(frames):
+            if newest_t - t >= self.cfg.motion_gap_sec:
+                busy, cell, ratio, _ = motion_report([old, newest], grid)
+                return (busy == 1 and cell == to
+                        and ratio >= MOTION_CELL_MIN)
+        return False
+
+    # ------------------------------------------- 갇힘 처리 / 장애물 부수기
+    def _handle_blocked(self, scene: Scene, plan) -> bool:
+        """막힌 주머니에 갇혔는지 보고, 필요하면 부수거나 기다린다.
+
+        반환: True 면 이번 사이클은 여기서 끝낸다(이동하지 않는다).
+
+        오른쪽으로 한 칸도 못 가는 상태에서 장애물 배치까지 그대로면, 세로로
+        움직여도 새 지형이 들어오지 않는 '주머니'에 갇힌 것이다. 이때 계속
+        움직이면 (1,0)->(1,1)->(2,1)->(1,1)->... 처럼 제자리를 맴돌며 이동
+        횟수만 축낸다(실측: 25번을 움직였는데 판이 그대로였다).
+
+        플레이어 칸은 움직일 때마다 바뀌므로 빼고 **장애물 배치만** 본다.
+        새 지형이 들어왔다면 장애물 배치가 반드시 달라진다.
+        """
+        layout = tuple(tuple(c == Kind.OBSTACLE for c in row)
+                       for row in scene.cells)
+        # 칩이나 아이템을 먹으러 가는 중이라면 '갇힘'으로 세지 않는다.
+        #
+        # 실측 교착: 갇힘 처리는 이동을 건너뛰고 만다. 그런데 이동을 안 했으니
+        # 장애물 배치는 당연히 그대로고, 그래서 다음 사이클도 갇힘으로 판정돼
+        # 또 건너뛴다. 스스로를 강화하는 교착이다. (실측: 칩 (2,3) 을 향해 UP 을
+        # 계획해 놓고 P(4,4) 에서 27초 동안 11사이클을 한 발짝도 못 갔다.)
+        # 갈 곳이 분명하면 갇힌 게 아니므로 그냥 가면 된다.
+        worth_going = plan.kind in (PlanKind.GOAL, PlanKind.ITEM)
+        if layout == self._last_layout and not worth_going:
+            self.stuck_cycles += 1
+        else:
+            self.stuck_cycles = 0
+        self._last_layout = layout
+
+        if self.stuck_cycles >= 3:
+            # 오른쪽이 막혔다. 초록 버튼으로 장애물을 부순다.
+            if self._press_green_button():
+                self.stuck_cycles = 0
+                self._last_layout = None
+                return True
+            self.log(f"[갇힘] {self.stuck_cycles}사이클째 장애물 배치가 "
+                     f"그대로인데 초록 버튼도 쓸 수 없습니다. "
+                     f"{self.cfg.blocked_wait_sec:g}초 기다립니다.")
+            self._sleep(self.cfg.blocked_wait_sec)
+            return True
+
+        # 부수기 아이템이 0 이면 장애물 클릭은 해 봐야 소용없다.
+        # 예전에는 두 번 눌러 보고 안내문이 뜨는 걸 확인해야 접었다.
+        if (plan.kind == PlanKind.BREAK_OBSTACLE
+                and not self.break_disabled and not self._can_use("break")):
+            self.log("[장애물] 부수기 아이템이 0개라 클릭하지 않습니다.")
+            self.break_disabled = True
+
+        if plan.kind == PlanKind.BREAK_OBSTACLE and self.break_disabled:
+            # 장애물 직접 클릭이 안 먹히는 것을 확인했다면 초록 버튼을 쓴다.
+            if self._press_green_button():
+                self._last_layout = None
+                return True
+            self.log(f"[경로] 우회로도 없고 장애물도 부술 수 없습니다. "
+                     f"{self.cfg.blocked_wait_sec:g}초 기다렸다가 다시 봅니다.")
+            self._sleep(self.cfg.blocked_wait_sec)
+            return True
+        return False
 
     # ------------------------------------------------- 칩 묶음 추적
     def _confirm_goals(self, scene: Scene) -> None:
@@ -486,8 +584,14 @@ class ExploreEngine:
             self._ghost_suspect += 1
             detected -= wiggling
 
+        # 이번 화면에 이펙트가 없다는 것을 **확인했는가.**
+        #   - 움직임 검사가 제대로 돌았고 (판이 스크롤 중이 아니었고)
+        #   - 검출된 칩 중 움직이는 것이 하나도 없다
+        # 둘 다 맞으면 두 프레임을 기다리지 않고 바로 잠근다.
+        no_effect = self._motion_valid and not wiggling
+
         was_locked = self.chips.locked
-        valid = self.chips.update(detected)
+        valid = self.chips.update(detected, trust_now=no_effect)
 
         if not was_locked and valid:
             self.log(f"[칩] 묶음을 새로 읽었습니다: {sorted(valid)} "
@@ -713,6 +817,17 @@ class ExploreEngine:
         before_sig = None
         before_sig_grid = None
 
+        # 걸음수는 이동에 성공할 때마다 정확히 1 줄어든다. 다른 신호가 모두
+        # 실패해도 이것으로 알아챌 수 있다(아래 참고). 읽는 데 1.8ms 다.
+        steps_before = None
+        if self.cfg.watch_counters:
+            got = counters.read(before)
+            steps_before = got.steps if got else None
+
+        polls = 0
+        # 확인 루프가 찍는 프레임을 (시각, 화면) 으로 조금 남긴다.
+        # 도착 확인에 **움직임**을 쓰기 위해서다. 아래 _arrived_by_motion 참고.
+        seen_frames: deque = deque(maxlen=60)
         while time.time() < deadline:
             self._check_stop()
             after = self._capture()
@@ -720,10 +835,12 @@ class ExploreEngine:
                 time.sleep(self.cfg.poll_interval_sec)
                 continue
 
-            if self._toast_visible(after):
+            polls += 1
+            if polls % self.cfg.toast_check_every == 0 and self._toast_visible(after):
                 self._wait_toast_clear()
                 return False, grid, False
 
+            seen_frames.append((time.time(), after))
             light = self._stable_grid(after)
             use_grid = light or grid
             pos = self._track_player(after, use_grid)
@@ -731,6 +848,25 @@ class ExploreEngine:
             ok = False
             scrolled = False
             if pos == to:
+                ok = True
+            elif steps_before is not None and self._steps_dropped(after, steps_before):
+                # **걸음수가 줄었으면 이동은 일어난 것이다.**
+                #
+                # 전진(오른쪽)은 판이 스크롤해서 플레이어가 화면상 같은 칸에
+                # 남으므로 '목표 칸 도착'으로도 '움직인 칸'으로도 확인되지 않는다.
+                # 실측: 실패한 이동 13건 중 11건이 오른쪽이었고 전부 2.5초
+                # 제한을 다 썼다. 걸음수는 이동당 정확히 1 줄고 0.53~2.10초
+                # 안에 화면에 반영된다(실측 22건, 전부 1씩).
+                #
+                # 무엇이 어떻게 바뀌었는지는 모르므로 스크롤한 것으로 치고
+                # 남은 경로를 버린다. 그래야 다음 클릭이 엉뚱한 칸으로 가지 않는다.
+                ok = True
+                scrolled = True
+            elif self._arrived_by_motion(seen_frames, use_grid, to):
+                # 색 기반 빠른 추적은 가끔 말이 안 되는 칸을 낸다.
+                # 실측: 실패한 이동 12건에서 (3,1)->(2,0), (4,1)->(4,4) 처럼
+                # 순간이동하는 값을 봤고, 그 12건이 전부 2.5초 제한을 다 썼다
+                # (150초 중 30초). 움직임은 그런 헛값을 내지 않는다.
                 ok = True
             elif pos == frm:
                 # 이전 칸에 남은 애니메이션 잔상이거나 아직 안 움직였다.
@@ -903,57 +1039,8 @@ class ExploreEngine:
                     self._sleep(self.cfg.lost_retry_sec)
                     continue
 
-                # --- 막힌 주머니 감지 --------------------------------
-                # 오른쪽으로 한 칸도 못 가는 상태에서 장애물 배치까지 그대로면,
-                # 세로로 움직여도 새 지형이 들어오지 않는 '주머니'에 갇힌 것이다.
-                # 이때 계속 움직이면 (1,0)->(1,1)->(2,1)->(1,1)->... 처럼 제자리를
-                # 맴돌며 이동 횟수만 축낸다(실측: 25번을 움직였는데 판이 그대로였다).
-                # 플레이어 칸은 움직일 때마다 바뀌므로 빼고, **장애물 배치만** 본다.
-                # 새 지형이 들어왔다면 장애물 배치가 반드시 달라진다.
-                layout = tuple(tuple(c == Kind.OBSTACLE for c in row)
-                               for row in scene.cells)
-                # 칩이나 아이템을 먹으러 가는 중이라면 '갇힘'으로 세지 않는다.
-                #
-                # 실측 교착: 아래 갇힘 처리는 이동을 건너뛰고 continue 한다.
-                # 그런데 이동을 안 했으니 장애물 배치는 당연히 그대로고, 그래서
-                # 다음 사이클도 갇힘으로 판정돼 또 건너뛴다. 스스로를 강화하는
-                # 교착이다. (실측: 칩 (2,3) 을 향해 UP 을 계획해 놓고 P(4,4) 에서
-                #  27초 동안 11사이클을 한 발짝도 못 갔다.)
-                # 갈 곳이 분명하면 갇힌 게 아니므로 그냥 가면 된다.
-                worth_going = plan.kind in (PlanKind.GOAL, PlanKind.ITEM)
-                if layout == self._last_layout and not worth_going:
-                    self.stuck_cycles += 1
-                else:
-                    self.stuck_cycles = 0
-                self._last_layout = layout
-
-                if self.stuck_cycles >= 3:
-                    # 오른쪽이 막혔다. 초록 버튼으로 장애물을 부순다.
-                    if self._press_green_button():
-                        self.stuck_cycles = 0
-                        self._last_layout = None
-                        continue
-                    self.log(f"[갇힘] {self.stuck_cycles}사이클째 장애물 배치가 "
-                             f"그대로인데 초록 버튼도 쓸 수 없습니다. "
-                             f"{self.cfg.blocked_wait_sec:g}초 기다립니다.")
-                    self._sleep(self.cfg.blocked_wait_sec)
-                    continue
-
-                # 부수기 아이템이 0 이면 장애물 클릭은 해 봐야 소용없다.
-                # 예전에는 두 번 눌러 보고 안내문이 뜨는 걸 확인해야 접었다.
-                if (plan.kind == PlanKind.BREAK_OBSTACLE
-                        and not self.break_disabled and not self._can_use("break")):
-                    self.log("[장애물] 부수기 아이템이 0개라 클릭하지 않습니다.")
-                    self.break_disabled = True
-
-                if plan.kind == PlanKind.BREAK_OBSTACLE and self.break_disabled:
-                    # 장애물 직접 클릭이 안 먹히는 것을 확인했다면 초록 버튼을 쓴다.
-                    if self._press_green_button():
-                        self._last_layout = None
-                        continue
-                    self.log(f"[경로] 우회로도 없고 장애물도 부술 수 없습니다. "
-                             f"{self.cfg.blocked_wait_sec:g}초 기다렸다가 다시 봅니다.")
-                    self._sleep(self.cfg.blocked_wait_sec)
+                # --- 갇혔는지 보고, 갇혔으면 부수거나 기다린다 --------
+                if self._handle_blocked(scene, plan):
                     continue
 
                 # --- 3~7) 한 칸씩 클릭하며 실제 도착을 확인 ------------

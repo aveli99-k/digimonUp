@@ -783,3 +783,31 @@ def test_이펙트가_의심되면_묶음을_잠그지_않는다():
         eng._confirm_goals(_scene_with_goals([(3, 2)]))
     assert not eng.chips.locked
     assert eng._ghost_suspect > 0
+
+
+def test_이펙트가_없다고_확인되면_바로_잠근다():
+    """실측: 두 프레임 연속 확인을 요구하니 칩이 처음 보인 사이클에 목표가 된
+    경우가 150초 65사이클 동안 **0건**이었고, 36건이 한 사이클 이상 늦었다.
+
+    그사이 전진해 버리면 칩이 뒤로 밀려 되돌아가서 먹어야 한다.
+    움직임으로 이펙트를 직접 가려낼 수 있는 지금은 기다릴 이유가 없다.
+    """
+    eng = _engine([])
+    eng._motion_valid = True            # 움직임 검사가 제대로 돌았다
+    eng._moving_cells = set()           # 움직이는 칩이 없다
+    sc = _scene_with_goals([(1, 3)])
+    eng._confirm_goals(sc)
+    assert [(d.row, d.col) for d in sc.goals] == [(1, 3)], \
+        "이펙트가 없는 것이 확인됐으면 첫 사이클에 잡아야 합니다"
+
+
+def test_이펙트_확인이_안_되면_예전처럼_두_번_본다():
+    """움직임 검사가 못 돌았으면(스크롤 중 등) 함부로 믿지 않는다."""
+    eng = _engine([])
+    eng._motion_valid = False
+    sc = _scene_with_goals([(1, 3)])
+    eng._confirm_goals(sc)
+    assert sc.goals == [], "확인이 안 됐으면 한 번 더 봐야 합니다"
+    sc2 = _scene_with_goals([(1, 3)])
+    eng._confirm_goals(sc2)
+    assert [(d.row, d.col) for d in sc2.goals] == [(1, 3)]

@@ -72,15 +72,28 @@ class ChipTracker:
         self._misses.pop(cell, None)
         return True
 
-    def update(self, detected: set[Cell]) -> set[Cell]:
+    def update(self, detected: set[Cell], trust_now: bool = False) -> set[Cell]:
         """이번 프레임 검출 결과로 묶음을 손질하고, 지금 유효한 칩을 돌려준다.
 
         잠겨 있으면 **새 칩은 받지 않는다.** 알고 있던 칩이 계속 안 보이면
         (MISS_LIMIT 회) 없어진 것으로 보고 뺀다.
-        비어 있으면 두 프레임 연속으로 같은 집합이 보일 때 새로 잠근다.
+
+        trust_now
+            이번 화면에 획득 이펙트가 없다는 것을 **확인했으면** True.
+            그러면 두 프레임을 기다리지 않고 바로 잠근다.
+
+            두 프레임 연속 확인은 이펙트를 직접 알아볼 방법이 없던 때의
+            대용품이었다. 지금은 '움직이는 칸의 칩은 이펙트'라는 직접 증거가
+            있으므로, 그 검사를 통과했다면 한 사이클을 더 기다릴 이유가 없다.
+
+            기다리면 손해가 크다. 실측(150초 65사이클): 칩이 처음 보인 사이클에
+            바로 목표가 된 경우가 **0건**이었고, 36건이 한 사이클 이상 늦었다.
+            그사이 전진해 버리면 칩이 뒤로 밀려 되돌아가서 먹어야 한다.
         """
         if not self.chips:
-            if self._pending is not None and self._pending == detected and detected:
+            if detected and (trust_now
+                             or (self._pending is not None
+                                 and self._pending == detected)):
                 self.chips = set(detected)
                 self._misses = {c: 0 for c in detected}
                 self._pending = None

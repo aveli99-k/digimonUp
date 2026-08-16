@@ -1075,16 +1075,39 @@ def find_top_tab(img: np.ndarray, tset: TemplateSet, top_ratio: float = 0.35):
     return score, box
 
 
+# 안내문이 뜨는 세로 범위 (화면 높이 대비).
+# 실측: 안내문 상자가 0.47~0.53 에 있었다. 넉넉히 잡아도 화면의 1/5 면 된다.
+TOAST_BAND = (0.40, 0.60)
+
+
 def find_blocked_toast(img: np.ndarray, tset: TemplateSet):
     """'해당 위치로 이동할 수 없습니다' 안내문을 찾는다 (클릭하면 안 되는 대상).
 
-    이동 확인 루프에서 폴링마다 불리는 자리라 속도가 곧 이동 확인 횟수다.
-    그래서 화면 전체를 원본 해상도로 훑지 않고 match_big(축소 선별 -> 원본 확인)
-    을 쓴다. 점수는 원본 해상도에서 재므로 판정 기준은 그대로다.
+    이동 확인 루프에서 되풀이해 불리는 자리라 속도가 곧 이동 확인 횟수다.
+    그래서 두 가지로 줄인다.
+
+      1. **안내문이 뜨는 띠만 본다.** 화면 세로 0.40~0.60 밖은 볼 이유가 없다.
+      2. match_big (축소 선별 -> 원본 확인) 으로 훑는다.
+
+    실측 (709x1260 화면)
+        전체 화면        75.7ms   안내문 0.869 / 없을 때 최대 0.549
+        0.40~0.60 띠     48.2ms   안내문 0.869 / 없을 때 최대 0.266
+
+    띠로 자르면 빨라지는 데다 **오탐 여유까지 넓어진다.** 화면 다른 곳의
+    비슷한 무늬를 아예 보지 않기 때문이다.
+
+    반환하는 상자는 **원본 화면 좌표**다(띠 오프셋을 더해 돌려준다).
     """
-    if not tset:
+    if not tset or img is None or img.size == 0:
         return 0.0, None
-    score, box, _ = match_big(img, tset, scales=(0.85, 1.0, 1.15))
+    h = img.shape[0]
+    top = int(h * TOAST_BAND[0])
+    band = img[top:int(h * TOAST_BAND[1])]
+    if band.size == 0:
+        return 0.0, None
+    score, box, _ = match_big(band, tset, scales=(0.85, 1.0, 1.15))
+    if box is not None:
+        box = (box[0], box[1] + top, box[2], box[3] + top)
     return score, box
 
 
