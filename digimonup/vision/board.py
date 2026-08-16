@@ -21,7 +21,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from imgio import hsv_of
+from digimonup.base.imgio import hsv_of
 
 N = 5                     # 5x5
 NLINES = N + 1            # 격자선 6개

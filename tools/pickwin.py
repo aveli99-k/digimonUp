@@ -12,7 +12,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from emulator_window import enumerate_candidates  # noqa: E402
+from digimonup.win.emulator_window import enumerate_candidates  # noqa: E402
 
 
 def pick_window():

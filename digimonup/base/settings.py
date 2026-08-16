@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from paths import CONFIG_PATH
+from digimonup.base.paths import CONFIG_PATH
 
 
 def load_raw() -> dict:
@@ -20,7 +20,7 @@ def load_explore_config():
 
     없는 키는 ExploreConfig 의 기본값을 그대로 쓴다.
     """
-    from explore import ExploreConfig
+    from digimonup.app.explore import ExploreConfig
 
     cfg = ExploreConfig()
     raw = load_raw()

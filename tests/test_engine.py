@@ -14,11 +14,11 @@ import time
 import numpy as np
 import pytest
 
-import board
-import explore
-import recognize
+from digimonup.vision import board
+from digimonup.app import explore
+from digimonup.vision import recognize
 import synth
-from explore import ExploreConfig, ExploreEngine, Stopped
+from digimonup.app.explore import ExploreConfig, ExploreEngine, Stopped
 
 LAYOUT_AT = {
     (1, 1): ["....." , ".P..X", "..X..", "....X", "....."],
@@ -495,9 +495,9 @@ def test_갇힘_판정은_플레이어_위치가_아니라_장애물_배치로_�
     처음에는 판 전체(플레이어 포함)를 비교했는데, 움직일 때마다 값이 달라져서
     갇힘을 영영 못 잡았다.
     """
-    import board as _b
-    import recognize as _r
-    from recognize import Kind as _K
+    from digimonup.vision import board as _b
+    from digimonup.vision import recognize as _r
+    from digimonup.vision.recognize import Kind as _K
     a = synth.make_board(["..X..", ".P...", "..X..", "XX...", ".X..."])
     b = synth.make_board(["..X..", "..P..", "..X..", "XX...", ".X..."])
     eng = _engine([a])
@@ -534,21 +534,21 @@ def test_제자리_도착으로_성공하면_스크롤_플래그가_꺼져_있�
 # ------------------------------------------------------ 중복 실행 방지
 def test_두_번째_실행은_거절된다():
     """바로가기를 두 번 누르면 매크로가 둘 다 같은 게임 창을 클릭해 서로 망친다."""
-    import single_instance
+    from digimonup.win import single_instance
     name = r"Global\digimonUp_test_mutex_dup"
     assert single_instance.acquire(name) is True
     assert single_instance.acquire(name) is False, "두 번째 실행이 통과했습니다"
 
 
 def test_서로_다른_이름은_막지_않는다():
-    import single_instance
+    from digimonup.win import single_instance
     assert single_instance.acquire(r"Global\digimonUp_test_mutex_a") is True
     assert single_instance.acquire(r"Global\digimonUp_test_mutex_b") is True
 
 
 # ------------------------------------------- 아이템 개수 모니터링 (실측 기반)
 def _counts(steps=None, brk=None, dash=None):
-    import counters
+    from digimonup.vision import counters
     return counters.Counters(steps=steps, break_=brk, dash=dash)
 
 
@@ -641,15 +641,15 @@ def test_중지키를_비워두면_키_검사를_하지_않는다(monkeypatch):
 
 def test_중지키는_config_최상위_stop_key_를_따른다():
     """1번 기능과 같은 키를 쓴다. explore 절에 적으면 그것이 우선한다."""
-    import settings
+    from digimonup.base import settings
     cfg = settings.load_explore_config()
     assert cfg.stop_key, "config.json 의 stop_key 를 못 읽었습니다"
 
 
 # ------------------- 칩 획득 이펙트 걸러내기 — 실측 회귀
 def _scene_with_goals(goals):
-    from recognize import Detection, Scene
-    from recognize import Kind
+    from digimonup.vision.recognize import Detection, Scene
+    from digimonup.vision.recognize import Kind
     cells = [[Kind.EMPTY] * 5 for _ in range(5)]
     dets = []
     for r, c in goals:
@@ -670,7 +670,7 @@ def test_잠근_묶음에_없는_칩은_이펙트로_본다():
     그 칩들은 템플릿 0.94~0.98, 주황 0.096~0.202 로 진짜와 같은 그림이라
     모양·색으로는 가를 수 없다. 그래서 묶음을 잠그고 새 칩을 아예 안 본다.
     """
-    from recognize import Kind
+    from digimonup.vision.recognize import Kind
     eng = _engine([])
     _lock(eng, [(1, 3)])
 
@@ -704,7 +704,7 @@ def test_전진하면_칩_자리를_따라간다():
 
 def test_한_프레임_놓쳐도_칩을_버리지_않는다():
     """다 온 칩을 한 번 못 봤다고 놓으면 눈앞에서 버리는 셈이다."""
-    from recognize import Kind
+    from digimonup.vision.recognize import Kind
     eng = _engine([])
     _lock(eng, [(2, 2)])
 
@@ -724,7 +724,7 @@ def test_계속_안_보이면_없어진_것으로_본다():
 
 
 def test_플레이어가_선_칸의_칩은_먹은_것으로_본다():
-    from recognize import Detection, Kind
+    from digimonup.vision.recognize import Detection, Kind
     eng = _engine([])
     _lock(eng, [(2, 1)])
 
@@ -751,7 +751,7 @@ def test_그림이_움직이는_칸의_칩은_이펙트로_본다():
     판이 가라앉았을 때 움직이는 것은 디지몬과 연출뿐이다. 판에 놓인 칩은
     가만히 있는다.
     """
-    from recognize import Kind
+    from digimonup.vision.recognize import Kind
     eng = _engine([])
     _lock(eng, [(1, 3)])
 
@@ -764,7 +764,7 @@ def test_그림이_움직이는_칸의_칩은_이펙트로_본다():
 
 def test_디지몬이_선_칸은_늘_움직이므로_빼고_본다():
     """디지몬은 제자리 애니메이션이 돌아 언제나 움직이는 칸이다."""
-    from recognize import Detection, Kind
+    from digimonup.vision.recognize import Detection, Kind
     eng = _engine([])
     _lock(eng, [(2, 1)])
 

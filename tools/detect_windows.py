@@ -26,11 +26,11 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import board                                          # noqa: E402
-import imgio                                          # noqa: E402
-from emulator_window import (EMULATOR_PROFILES, capture_client,  # noqa: E402
+from digimonup.vision import board                                          # noqa: E402
+from digimonup.base import imgio                                          # noqa: E402
+from digimonup.win.emulator_window import (EMULATOR_PROFILES, capture_client,  # noqa: E402
                              enable_dpi_awareness, enumerate_candidates)
-from paths import DEBUG_DIR                           # noqa: E402
+from digimonup.base.paths import DEBUG_DIR                           # noqa: E402
 
 OUT_DIR = os.path.join(DEBUG_DIR, "windows")
 

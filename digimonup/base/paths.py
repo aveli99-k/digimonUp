@@ -23,11 +23,19 @@ import os
 import sys
 
 
+# 이 파일에서 저장소 루트까지 올라가야 하는 깊이 (digimonup/base/paths.py).
+# 파일을 옮기면 여기도 함께 고쳐야 config.json 과 templates/ 를 찾는다.
+_DEPTH_FROM_ROOT = 3
+
+
 def app_dir() -> str:
     """EXE(또는 소스)가 있는 폴더. 사용자가 파일을 두는 곳이자, 쓰기의 기준."""
     if getattr(sys, "frozen", False):
         return os.path.dirname(os.path.abspath(sys.executable))
-    return os.path.dirname(os.path.abspath(__file__))
+    here = os.path.abspath(__file__)
+    for _ in range(_DEPTH_FROM_ROOT):
+        here = os.path.dirname(here)
+    return here
 
 
 def bundle_dir() -> str:

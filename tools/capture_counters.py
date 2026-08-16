@@ -28,12 +28,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import cv2                                                    # noqa: E402
 
-import counters                                               # noqa: E402
-import imgio                                                  # noqa: E402
-from emulator_window import (capture_client,                   # noqa: E402
+from digimonup.vision import counters                                               # noqa: E402
+from digimonup.base import imgio                                                  # noqa: E402
+from digimonup.win.emulator_window import (capture_client,                   # noqa: E402
                              enable_dpi_awareness)
 from pickwin import pick_window                                # noqa: E402
-from paths import BASE_DIR                                    # noqa: E402
+from digimonup.base.paths import BASE_DIR                                    # noqa: E402
 
 OUT_DIR = os.path.join(BASE_DIR, "templates", "counters")
 

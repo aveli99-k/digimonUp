@@ -13,9 +13,9 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from board import Grid
-from imgio import imwrite
-from recognize import Kind, Scene
+from digimonup.vision.board import Grid
+from digimonup.base.imgio import imwrite
+from digimonup.vision.recognize import Kind, Scene
 
 COLOR = {
     Kind.PLAYER: (0, 215, 255),     # 주황

@@ -9,7 +9,7 @@ if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
 
 import pytest
 
-import recognize
+from digimonup.vision import recognize
 
 
 @pytest.fixture(autouse=True)

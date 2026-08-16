@@ -35,9 +35,9 @@ from enum import Enum
 import cv2
 import numpy as np
 
-from board import Grid, N
-from imgio import hsv_of, imread_bgr
-from paths import EXPLORE_TEMPLATE_DIR as TEMPLATE_DIR
+from digimonup.vision.board import Grid, N
+from digimonup.base.imgio import hsv_of, imread_bgr
+from digimonup.base.paths import EXPLORE_TEMPLATE_DIR as TEMPLATE_DIR
 
 
 class Kind(str, Enum):

@@ -24,10 +24,10 @@ import time
 
 import cv2
 
-from emulator_window import capture_client, enable_dpi_awareness
+from digimonup.win.emulator_window import capture_client, enable_dpi_awareness
 from pickwin import pick_window
 
-from paths import EXPLORE_TEMPLATE_DIR as OUT_ROOT
+from digimonup.base.paths import EXPLORE_TEMPLATE_DIR as OUT_ROOT
 
 TARGETS = {
     "1": ("player", "플레이어 (기본 자세). 여러 장 찍을수록 좋습니다"),

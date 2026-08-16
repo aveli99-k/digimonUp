@@ -20,7 +20,7 @@ import time
 
 import cv2
 
-from common import (
+from digimonup.base.common import (
     BASE_DIR,
     enable_dpi_awareness,
     ensure_windows,

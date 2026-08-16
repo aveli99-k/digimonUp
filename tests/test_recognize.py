@@ -10,11 +10,11 @@ from __future__ import annotations
 import cv2
 import pytest
 
-import board
-import recognize
+from digimonup.vision import board
+from digimonup.vision import recognize
 import synth
-from board import N
-from recognize import Kind
+from digimonup.vision.board import N
+from digimonup.vision.recognize import Kind
 
 LAYOUT = ["....." , ".P..X", "..X..", "....X", "....."]
 
@@ -258,7 +258,7 @@ def _real_templates():
     import glob
     import os
 
-    import paths
+    from digimonup.base import paths
     out = {}
     for name in ("player", "player_body", "goal", "obstacle", "item",
                  "top_tab", "blocked_toast", "green_button"):

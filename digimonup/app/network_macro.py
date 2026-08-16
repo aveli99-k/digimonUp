@@ -21,7 +21,7 @@ import time
 
 import pyautogui
 
-from common import (enable_dpi_awareness, find_template, grab_screen,
+from digimonup.base.common import (enable_dpi_awareness, find_template, grab_screen,
                     is_stop_key_pressed, load_config, load_template, vk_of)
 
 pyautogui.FAILSAFE = True

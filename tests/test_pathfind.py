@@ -10,10 +10,10 @@
 
 from __future__ import annotations
 
-import pathfind
-from board import Grid, N
-from pathfind import PlanKind, plan_route
-from recognize import Detection, Kind, Scene
+from digimonup.logic import pathfind
+from digimonup.vision.board import Grid, N
+from digimonup.logic.pathfind import PlanKind, plan_route
+from digimonup.vision.recognize import Detection, Kind, Scene
 
 SYM = {".": Kind.EMPTY, "X": Kind.OBSTACLE, "P": Kind.PLAYER,
        "G": Kind.GOAL, "i": Kind.ITEM}
@@ -314,7 +314,7 @@ def test_멀리_있는_칩은_그_행에_서서_전진해_받는다():
 
 # ------------------------------------- 주황칩(필수 아이템)이 여러 개인 경우
 def _scene_with_chips(layout):
-    from recognize import Detection
+    from digimonup.vision.recognize import Detection
     scene = make_scene(layout)
     scene.goals = [Detection(Kind.GOAL, r, c, 0.6)
                    for r in range(N) for c in range(N)
@@ -348,7 +348,7 @@ def test_칩이_같은_거리면_더_오른쪽_칩을_고른다():
         ".....",
     ])
     scene.cells[2][1] = Kind.GOAL
-    from recognize import Detection
+    from digimonup.vision.recognize import Detection
     scene.goals.append(Detection(Kind.GOAL, 2, 1, 0.6))
     plan = plan_route(scene)
     assert plan.kind == PlanKind.GOAL

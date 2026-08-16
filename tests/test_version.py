@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 
-import version
+from digimonup.base import version
 
 
 def test_버전_형식이_맞다():

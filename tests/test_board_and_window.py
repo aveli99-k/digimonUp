@@ -5,12 +5,12 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-import board
-import explore
-import emulator_window
-import recognize
+from digimonup.vision import board
+from digimonup.app import explore
+from digimonup.win import emulator_window
+from digimonup.vision import recognize
 import synth
-from emulator_window import Candidate
+from digimonup.win.emulator_window import Candidate
 
 REAL = "tests/fixtures/explore_sample1.png"
 

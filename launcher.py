@@ -29,9 +29,9 @@ def _silence_missing_console() -> None:
 
 _silence_missing_console()
 
-import single_instance  # noqa: E402
-from emulator_window import enable_dpi_awareness  # noqa: E402
-from version import __version__, version_line  # noqa: E402
+from digimonup.win import single_instance  # noqa: E402
+from digimonup.win.emulator_window import enable_dpi_awareness  # noqa: E402
+from digimonup.base.version import __version__, version_line  # noqa: E402
 
 MENU = f"""
 ============================================
@@ -45,11 +45,11 @@ MENU = f"""
 
 def run_console(mode: str) -> int:
     if mode == "1":
-        from network_macro import NetworkMacro
+        from digimonup.app.network_macro import NetworkMacro
         return NetworkMacro().run()
     if mode == "2":
-        from explore import ExploreEngine
-        from settings import load_explore_config
+        from digimonup.app.explore import ExploreEngine
+        from digimonup.base.settings import load_explore_config
         engine = ExploreEngine(load_explore_config())
         try:
             engine.run()
@@ -97,7 +97,7 @@ def main(argv: list[str]) -> int:
             return 0
         return run_console(choice)
 
-    from gui import main as gui_main
+    from digimonup.app.gui import main as gui_main
     return gui_main()
 
 

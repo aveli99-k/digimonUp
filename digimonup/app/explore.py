@@ -28,22 +28,22 @@ from dataclasses import dataclass
 
 import numpy as np
 
-import chiptrack
-import counters
-import overlay
-from common import is_stop_key_pressed, vk_of
-from board import Grid, N, detect_board
-from emulator_window import (EmulatorWindow, capture_client,
+from digimonup.logic import chiptrack
+from digimonup.vision import counters
+from digimonup.vision import overlay
+from digimonup.base.common import is_stop_key_pressed, vk_of
+from digimonup.vision.board import Grid, N, detect_board
+from digimonup.win.emulator_window import (EmulatorWindow, capture_client,
                              enable_dpi_awareness, enumerate_candidates)
-from pathfind import PlanKind, plan_route
-from recognize import (Detection, Kind, Scene, TemplateSet, analyze,
+from digimonup.logic.pathfind import PlanKind, plan_route
+from digimonup.vision.recognize import (Detection, Kind, Scene, TemplateSet, analyze,
                        find_blocked_toast,
                        find_green_button, find_top_tab, hsv_of, load_templates,
                        mask_highlight, mask_obstacle, motion_report,
                        track_player_fast, _frac)
-from recognize import MOTION_CELL_MIN, MOTION_MAX_CELLS
+from digimonup.vision.recognize import MOTION_CELL_MIN, MOTION_MAX_CELLS
 
-from paths import DEBUG_DIR
+from digimonup.base.paths import DEBUG_DIR
 
 
 @dataclass

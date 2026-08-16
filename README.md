@@ -162,17 +162,18 @@ python tools\capture_counters.py
 | | |
 |---|---|
 | `launcher.py` | 진입점. 인자 없으면 GUI, `1`/`2` 를 주면 콘솔 실행 |
-| `gui.py` | 시작/정지, 로그, 인식 결과 미리보기 |
-| `network_macro.py` / `explore.py` | 1번 / 2번 기능 본체 |
-| `emulator_window.py` | 앱플레이어 창 찾기·고정·캡처·클릭 |
-| `board.py` / `recognize.py` / `pathfind.py` | 격자 검출 / 셀 인식 / 경로 계산 |
-| `chiptrack.py` | 주황칩 묶음 추적 (획득 이펙트를 진짜 칩과 가려냅니다) |
-| `counters.py` | 왼쪽 아래 걸음수·부수기·돌진 개수 읽기 |
-| `imgio.py` / `version.py` | 한글 경로 이미지 입출력 / 버전 번호 |
+| `digimonup/base/` | 경로·설정·이미지 입출력 (게임과 무관한 바닥층) |
+| `digimonup/vision/` | 화면에서 무엇이 보이는지 — 격자, 셀, 개수, 오버레이 |
+| `digimonup/logic/` | 무엇을 할지 — 경로 계산, 칩 추적 (화면도 창도 모릅니다) |
+| `digimonup/win/` | 윈도우에 붙는 부분 — 창 찾기, 캡처, 클릭, 중복 실행 막기 |
+| `digimonup/app/` | 기능 본체와 화면 — 탐사, 네트워크, GUI |
 | `tools/` | 창 진단, 템플릿 캡처, 인식 점검, 아이콘 생성 |
 | `scripts/` | 실행·빌드·바로가기 스크립트 |
 | `assets/` | 앱 아이콘 (`tools/make_icon.py` 로 만듭니다) |
 | `tests/` | 자동 테스트 (151개) |
+
+층은 아래에서 위로만 의존합니다. `logic` 은 화면도 창도 모르기 때문에
+에뮬레이터 없이 그대로 테스트할 수 있습니다.
 
 ```bash
 python -m pytest tests -q

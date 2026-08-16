@@ -43,8 +43,8 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from imgio import imread_bgr
-from paths import resource
+from digimonup.base.imgio import imread_bgr
+from digimonup.base.paths import resource
 
 DIGIT_DIR = resource("templates", "counters")
 

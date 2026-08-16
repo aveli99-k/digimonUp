@@ -27,7 +27,7 @@ from datetime import datetime
 import tkinter as tk
 from tkinter import ttk
 
-from version import __version__, version_line
+from digimonup.base.version import __version__, version_line
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -61,7 +61,7 @@ class App:
     def _set_icon(root: tk.Tk) -> None:
         """제목 표시줄과 작업 표시줄 아이콘. 없거나 실패해도 그냥 넘어간다."""
         try:
-            from paths import resource
+            from digimonup.base.paths import resource
             path = resource("assets", "icon.ico")
             if os.path.exists(path):
                 root.iconbitmap(path)
@@ -213,8 +213,8 @@ class App:
             self.msgq.put(("done", None))
 
     def _run_explore(self) -> None:
-        from explore import ExploreEngine
-        from settings import load_explore_config
+        from digimonup.app.explore import ExploreEngine
+        from digimonup.base.settings import load_explore_config
 
         engine = ExploreEngine(load_explore_config(), log=self.log,
                                status=self.status, preview=self.preview)
@@ -231,7 +231,7 @@ class App:
         engine.run()
 
     def _run_network(self) -> None:
-        import network_macro
+        from digimonup.app import network_macro
         engine = network_macro.NetworkMacro(log=self.log, status=self.status)
         self.engine = engine
         engine.run()
@@ -250,7 +250,7 @@ class App:
 
 
 def main() -> int:
-    from emulator_window import enable_dpi_awareness
+    from digimonup.win.emulator_window import enable_dpi_awareness
     enable_dpi_awareness()
 
     root = tk.Tk()
