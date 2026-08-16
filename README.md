@@ -210,7 +210,7 @@ python tools\capture_counters.py
 | `tools/` | 창 진단, 템플릿 캡처, 인식 점검, 아이콘 생성 |
 | `scripts/` | 실행·빌드·바로가기 스크립트 |
 | `assets/` | 앱 아이콘 (`tools/make_icon.py` 로 만듭니다) |
-| `tests/` | 자동 테스트 (186개) |
+| `tests/` | 자동 테스트 (253개) |
 
 층은 아래에서 위로만 의존합니다. `logic` 은 화면도 창도 모르기 때문에
 에뮬레이터 없이 그대로 테스트할 수 있습니다.
@@ -221,6 +221,13 @@ python -m pytest tests -q
 
 에뮬레이터 없이도 돌아갑니다. `tests/synth.py` 가 실측 HSV 값으로 게임 화면을
 합성하고, `tests/fixtures/` 의 실제 캡처로 현실성을 함께 검증합니다.
+
+정적 검사도 함께 돌립니다. 자동 테스트가 닿지 않는 `tools/` 의 이름 사고를
+잡아 주는 자리입니다(설정은 `ruff.toml`).
+
+```bash
+python -m ruff check .
+```
 
 ---
 
