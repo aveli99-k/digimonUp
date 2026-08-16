@@ -53,6 +53,9 @@ BAND_X = (0.0, 0.36)
 BAND_Y = (0.80, 0.97)
 
 ICON_MIN_AREA = 400        # 이보다 작은 덩어리는 아이콘이 아니다 (반짝임 등)
+# 아이콘의 가로:세로 허용 비율. 이보다 길쭉하면 아이콘 하나가 아니다.
+# 가로로 길면 충전 타이머가 붙은 것이므로 _icon_in_merged 로 되살린다.
+ICON_ASPECT_MAX = 2.2
 DIGIT_MIN_AREA = 12
 # 글자 높이를 띠 높이로 나눈 값의 허용 범위. 실측(709x1260 화면):
 #   숫자 13~14px / 띠 40px = 0.33~0.35
@@ -130,6 +133,31 @@ def find_rows(img: np.ndarray) -> list[tuple[int, int, int, int]]:
     """왼쪽 아래 아이콘 세 개의 bbox 를 위에서부터 돌려준다 (클라이언트 좌표).
 
     아이콘은 채도가 높고, 그 주변 패널은 연회색이라 채도가 낮다. 그 차이로 찾는다.
+
+    **충전 타이머가 붙은 줄을 되살린다.**
+
+    어느 항목이든 바닥나면 그 줄 왼쪽에 충전 타이머가 뜬다('05:32', '30:20').
+    분홍이라 채도가 높아 아이콘과 한 덩어리로 이어지고, 가로로 길쭉해져
+    '아이콘은 정사각형에 가깝다' 규칙에 걸러진다. 그러면 그 줄이 통째로 사라진다.
+
+    타이머는 **언제나 아이콘 왼쪽**에 붙는다(실측 캡처 114장, 예외 0). 그래서
+    덩어리의 **오른쪽 끝에서 높이만큼**을 잘라 내면 그것이 아이콘이다. 이렇게
+    되살리면 세 줄이 다 잡히므로, 어느 줄이 빠졌는지 추측할 필요가 아예 없다.
+
+    예전에는 추측했다 — 둘만 찾으면 '위 둘을 찾았고 아래가 가려졌다'고 보고
+    간격으로 아래에 한 줄을 만들어 붙였다(`_fill_missing_rows`). 실측해 보니
+    **가려지는 줄은 아래가 아닐 수 있다.** 캡처 4장에서 가려진 것은 맨 위
+    (걸음수)였고, 그때 값이 통째로 한 줄씩 밀렸다.
+
+        진짜   걸음수 7 / 부수기 235 / 돌진 30
+        읽은 값 걸음수 235 / 부수기 30 / 돌진 모름
+
+    걸음수 7 을 235 로 읽으면 `stop_when_out_of_steps` 가 영영 안 걸리고,
+    돌진이 '모름'이 되어 `_can_use` 가 계속 False 를 낸다. 이 모듈의 규약은
+    '엉뚱한 숫자를 읽느니 모른다고 하는 편이 안전하다'인데 추측이 그것을 깼다.
+
+    되살리기로도 세 줄이 안 되면 **찾은 것만 돌려준다.** 그러면 read() 가
+    전부 None(모름)으로 답하고, 엔진은 아껴 쓰는 쪽으로 돈다.
     """
     if img is None or img.size == 0:
         return []
@@ -145,41 +173,41 @@ def find_rows(img: np.ndarray) -> list[tuple[int, int, int, int]]:
     m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
     num, _, stats, _ = cv2.connectedComponentsWithStats(m, 8)
 
-    found = []
+    found: list[tuple[int, int, int, int]] = []
+    merged: list[tuple[int, int, int, int]] = []
     for i in range(1, num):
         x, y, bw, bh, area = stats[i]
         if area < ICON_MIN_AREA:
             continue
-        # 아이콘은 대체로 정사각형에 가깝다. 가로로 길쭉한 것은 반짝임/띠다.
-        if bw > bh * 2.2 or bh > bw * 2.2:
+        box = (x0 + int(x), y0 + int(y), int(bw), int(bh))
+        # 아이콘은 대체로 정사각형에 가깝다.
+        if bh > bw * ICON_ASPECT_MAX:
+            continue                      # 세로로 길쭉한 것은 아이콘이 아니다
+        if bw > bh * ICON_ASPECT_MAX:
+            merged.append(box)            # 타이머가 붙었을 수 있다. 아래에서 본다
             continue
-        found.append((x0 + int(x), y0 + int(y), int(bw), int(bh)))
+        found.append(box)
+
+    # **줄이 모자랄 때만** 되살린다. 셋이 이미 다 잡혔으면 가로로 긴 덩어리는
+    # 예전처럼 그냥 버린다. 멀쩡한 세 줄에 가짜를 하나 더 얹지 않기 위해서다.
+    if len(found) < 3 and merged:
+        found += [_icon_in_merged(b) for b in merged]
     found.sort(key=lambda b: b[1])
-    return _fill_missing_rows(found)
+    return found[:3]
 
 
-def _fill_missing_rows(found: list[tuple[int, int, int, int]]
-                       ) -> list[tuple[int, int, int, int]]:
-    """빠진 줄을 **일정한 간격**으로 채워 넣는다.
+def _icon_in_merged(blob: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    """충전 타이머가 붙어 가로로 길어진 덩어리에서 아이콘만 떼어 낸다.
 
-    아이콘 세 개는 같은 x 에 같은 간격으로 놓인다. 그런데 옆에 다른 것이 붙으면
-    그 줄만 못 찾는다.
+    타이머는 아이콘 **왼쪽**에 붙고 아이콘은 정사각형에 가까우므로, 오른쪽
+    끝에서 높이만큼을 잘라 내면 그것이 아이콘이다.
 
-    실측 회귀: 돌진을 다 쓰자 그 줄 왼쪽에 충전 타이머('55:07', 분홍)가 떴다.
-    채도가 높아 아이콘과 한 덩어리로 이어졌고, 가로로 길쭉해져 걸러졌다.
-    그러면 줄이 둘만 남는데, 그때 **세 항목이 전부 None 이 된다.** 개수를 모르면
-    아이템을 안 쓰도록 해 두었으므로(ExploreEngine._can_use) 매크로가 통째로
-    보수적으로 돌아 버린다. 한 줄 때문에 나머지 둘까지 잃을 이유가 없다.
+    실측 (709x1260 캡처)
+        '05:32' + 발자국(걸음수)   덩어리 폭 118 / 높이 41  -> 아이콘 x 오프셋 77
+        '30:20' + 초록알(돌진)     덩어리 폭 116 / 높이 40  -> 아이콘 x 오프셋 76
     """
-    if len(found) != 2:
-        return found[:3]
-    (x1, y1, w1, h1), (x2, y2, w2, h2) = found
-    gap = y2 - y1
-    if gap <= 0:
-        return found
-    # 셋 중 어느 둘을 찾았는지는 모른다. 위 둘이라고 보고 아래를 채우는 것이
-    # 맞다 — 아래(돌진)가 타이머 때문에 가려지는 것이 실측된 경우다.
-    return found + [(x2, y2 + gap, w2, h2)]
+    x, y, bw, bh = blob
+    return (x + bw - bh, y, bh, bh)
 
 
 def _strip_of(img: np.ndarray, icon: tuple[int, int, int, int]) -> np.ndarray:
