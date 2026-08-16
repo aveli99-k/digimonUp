@@ -62,6 +62,11 @@ DIGIT_H_RATIO = (0.25, 0.60)
 DIGIT_MATCH_MIN = 0.72     # 이 아래면 '모르는 글자'로 취급한다
 STRIP_W_RATIO = 3.2        # 숫자 띠 폭 / 아이콘 폭. 실측: 네 자리 수가 1.4배
 
+# 점수가 이보다 낮으면 2등을 앞서도 믿지 않는다.
+DIGIT_LOOSE_MIN = 0.60
+# 2등을 이만큼 앞서야 '뚜렷이 앞선다'고 본다. 실측 최소 차이 0.08.
+DIGIT_LEAD_MIN = 0.06
+
 ROW_NAMES = ("steps", "break", "dash")     # 위에서부터 걸음수 / 부수기 / 돌진
 ROW_LABELS = {"steps": "걸음수", "break": "부수기", "dash": "돌진"}
 
@@ -227,15 +232,35 @@ def _match_glyph(glyph: np.ndarray,
 
     한 숫자에 본보기가 여러 장이면 그중 가장 잘 맞는 것으로 견준다.
     """
-    best_name, best_score = None, 0.0
+    per: dict[str, float] = {}
     for name, tpls in digits.items():
         for tpl in tpls:
             t = cv2.resize(tpl, (glyph.shape[1], glyph.shape[0]),
                            interpolation=cv2.INTER_AREA)
             score = float(cv2.matchTemplate(glyph, t, cv2.TM_CCOEFF_NORMED)[0][0])
-            if score > best_score:
-                best_name, best_score = name, score
-    return best_name if best_score >= DIGIT_MATCH_MIN else None
+            if score > per.get(name, 0.0):
+                per[name] = score
+    if not per:
+        return None
+    ranked = sorted(per.items(), key=lambda kv: -kv[1])
+    (best_name, best), second = ranked[0], (ranked[1][1] if len(ranked) > 1 else 0.0)
+
+    # **점수 하나로 자르지 않는다. 2등과의 차이도 본다.**
+    #
+    # 같은 글자도 자리에 따라 조금씩 다르게 그려져서 절대 점수가 오르내린다.
+    # 본보기를 계속 추가하는 것은 두더지잡기다. 그런데 실측을 보면 **1등은
+    # 언제나 정답이었고** 모자란 것은 절대 점수뿐이었다.
+    #
+    #   1(1.00) 2등 0.32 차이 0.68      7(0.94) 2등 0.44 차이 0.50
+    #   8(0.71) 2등 0.54 차이 0.18      8(0.67) 2등 0.59 차이 0.08
+    #
+    # 그래서 '점수가 충분히 높거나' 또는 '조금 낮아도 2등을 뚜렷이 앞서면'
+    # 받아들인다. 둘 다 아니면 여전히 모른다고 답한다.
+    if best >= DIGIT_MATCH_MIN:
+        return best_name
+    if best >= DIGIT_LOOSE_MIN and (best - second) >= DIGIT_LEAD_MIN:
+        return best_name
+    return None
 
 
 def read_number(img: np.ndarray, icon: tuple[int, int, int, int]) -> int | None:

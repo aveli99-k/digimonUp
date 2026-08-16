@@ -39,6 +39,7 @@ from digimonup.win.emulator_window import (EmulatorWindow, capture_client,
                              enable_dpi_awareness, enumerate_candidates)
 from digimonup.logic.pathfind import (ADVANCE_COL, PLAYER_MAX_COL, PlanKind,
                                       plan_route)
+from digimonup.logic import pathfind
 from digimonup.logic.pathfind import break_cost as pathfind_break_cost
 from digimonup.vision.recognize import (Detection, Kind, Scene, TemplateSet, analyze,
                        find_blocked_toast,
@@ -597,10 +598,20 @@ class ExploreEngine:
             self._sleep(self.cfg.blocked_wait_sec)
             return True
 
-        # 부수기 아이템이 0 이면 장애물 클릭은 해 봐야 소용없다.
-        # 예전에는 두 번 눌러 보고 안내문이 뜨는 걸 확인해야 접었다.
+        # 부수기 아이템이 **0 이라고 읽었을 때만** 파괴를 접는다.
+        #
+        # 예전에는 _can_use() 가 False 면 접었다. 그런데 _can_use 는 개수를
+        # **못 읽었을 때도** False 를 돌려준다(아껴 쓰기 규칙, 30장). 그러면
+        #     개수 읽기 실패 -> "부수기 0개" -> break_disabled 영구 설정
+        #     -> 장애물을 벽으로 취급 -> 부수고 갈 길을 두고 오른쪽만 시도
+        # 로 이어진다. 실측: 경로 계산 32회 내내 장애물을 벽으로 봤고, 그중
+        # 29회는 break_disabled 가 켜진 뒤였다. 아이템은 멀쩡히 있었다.
+        #
+        # 못 읽는 것은 **일시적**이다(숫자가 네 자리가 되거나 옆에 타이머가
+        # 뜨면 막힌다). 그걸로 기능을 영구히 끄면 안 된다.
+        left = self.counts.break_
         if (plan.kind == PlanKind.BREAK_OBSTACLE
-                and not self.break_disabled and not self._can_use("break")):
+                and not self.break_disabled and left is not None and left <= 0):
             self.log("[장애물] 부수기 아이템이 0개라 클릭하지 않습니다.")
             self.break_disabled = True
 
@@ -667,9 +678,14 @@ class ExploreEngine:
         """
         if self.break_disabled or not self.cfg.allow_obstacle_break:
             return None
-        if not self._can_use("break"):
-            return None
-        return pathfind_break_cost(self.counts.steps, self.counts.break_)
+        left = self.counts.break_
+        if left is not None and left <= 0:
+            return None                   # 0 이라고 **읽었을 때만** 막는다
+        if left is None and self.cfg.watch_counters:
+            # 개수를 못 읽었다. 그래도 장애물을 벽으로 보면 길을 통째로 잃는다.
+            # 아껴 쓰는 쪽으로 값을 비싸게 매겨 꼭 필요할 때만 부수게 한다.
+            return pathfind.BREAK_COST_RANGE[1]
+        return pathfind_break_cost(self.counts.steps, left)
 
     # --------------------------------------------- 판을 가리는 팝업 닫기
     def _close_popup_if_any(self, img: np.ndarray) -> bool:
