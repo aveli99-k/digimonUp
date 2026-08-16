@@ -50,7 +50,8 @@
     "use_green_button": true,
     "green_button_max_uses": 0,
     "blocked_wait_sec": 2.0,
-    "save_debug": true
+    "save_debug": true,
+    "trace": true
   },
   "dungeon": {
     "window_title_hint": "",

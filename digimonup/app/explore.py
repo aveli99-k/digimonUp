@@ -31,6 +31,7 @@ import numpy as np
 
 from digimonup.logic import chiptrack
 from digimonup.vision import counters
+from digimonup.base import trace
 from digimonup.vision import popup
 from digimonup.vision import overlay
 from digimonup.base.common import Stopped, is_stop_key_pressed, vk_of
@@ -87,6 +88,10 @@ class ExploreConfig:
     # 칩 획득 이펙트가 보일 때, 묶음을 새로 읽기 전에 기다리는 시간.
     # 실측: 이펙트 칩은 전부 0.72초 안에 사라졌다.
     ghost_settle_sec: float = 0.8
+    # 장애물을 부순 뒤, 그 자리를 다시 읽기 전에 기다리는 시간. 부서지는 연출이
+    # 끝나고 아래에 있던 칩·아이템이 드러날 때까지다. 실측으로 0.45초면 충분했다
+    # (61.3초에 (4,2) 를 부수고 그 뒤 첫 인식에서 드러난 칩을 바로 찾았다).
+    break_settle_sec: float = 0.45
 
     cycle_pause_sec: float = 0.25      # 전체 재인식 사이의 쉬는 시간
     lost_retry_sec: float = 0.8        # 인식 실패 시 재시도 간격
@@ -162,11 +167,20 @@ class ExploreConfig:
 
     # 디버그
     save_debug: bool = True
+    # 판단 근거를 통째로 남긴다 (debug/trace/<시각>/log.jsonl).
+    # 무엇을 보고 왜 그렇게 했는지 나중에 그대로 되짚을 수 있다.
+    # tools/analyze_trace.py 로 읽는다.
+    trace: bool = False
+    trace_frames: bool = False       # 사이클마다 화면도 남길지 (용량이 크다)
 
 
 # 셀 요약이 이만큼도 안 바뀌었으면 '판이 그대로'로 본다.
 # 실측: 먹히지 않은 클릭 0.001~0.006 / 성공한 전진 0.07~0.17.
 DEAD_CLICK_SAME = 0.02
+
+# 돌진 한 번에 챙겨야 하는 칩의 최소 개수. 하나짜리는 걸어가는 편이 낫다
+# (걸음수 최대 3 대 돌진 1, 남은 양은 1550 대 45). _dash_if_worth 참고.
+DASH_MIN_CHIPS = 2
 
 
 @dataclass
@@ -236,8 +250,10 @@ class ExploreEngine:
         # 이번 이동에서 '무슨 일이 있었는지 확실치 않다'는 표시.
         # 남은 경로를 버리고 다시 인식해야 한다는 뜻이다(스크롤과는 다르다).
         self._path_dirty = False
+        self.trace = trace.Tracer(self.cfg.trace, self.cfg.trace_frames)
         # 직전 폴링의 '판이 그대로' 점수 (_scrolled_one_cell 이 채운다).
         self._last_same: float | None = None
+        self._last_moved: float | None = None
         # 직전 사이클에 보인 0열 칩. 되돌아가야 하는 칩은 두 번 봐야 인정한다.
         self._prev_zero: set = set()
 
@@ -639,10 +655,26 @@ class ExploreEngine:
         1550 대 돌진 45 로 서른네 배 차이가 난다. 빈 길에서 돌진을 쓰면
         걸음수 셋을 아끼자고 훨씬 귀한 것을 버리는 셈이다.
 
-        그래서 **칩을 챙길 때만 쓴다.** 칩 하나는 걸음수 세 개보다 값지다.
-        조건은 둘 다 맞아야 한다.
-            1. 앞 세 열 **내 행**에 칩이 있다        -> 돌진이 그걸 먹는다
+        그래서 **걸어서는 못 먹을 때만 쓴다.** 조건은 셋 다 맞아야 한다.
+            1. 앞 세 열 **내 행**에 칩이 **둘 이상** 있다
             2. 앞 세 열 **다른 행**에는 칩이 없다    -> 지나쳐 잃을 것이 없다
+            3. 그 길에 **장애물이 있다**             -> 뚫려 있으면 그냥 걸어간다
+
+        3번을 넣은 이유 (실측 회귀, 299초에 돌진한 두 번 다)
+            63.7초  플레이어 (0,1), 칩 (0,2)·(0,4), 0행에 장애물이 **하나도 없음**
+            258.7초 플레이어 (0,1), 칩 (0,2)·(0,3), 마찬가지로 뚫려 있음
+            둘 다 오른쪽만 누르면 걸음수 몇 개로 전부 먹는 자리였다. 아이템은
+            길이 막혔을 때 쓰는 것이지, 뚫린 길에서 걸음수를 아끼자고 쓰는
+            것이 아니다.
+
+        1번이 '하나'가 아니라 '둘 이상'인 이유 (실측 회귀, 67.5초)
+            막다른 길에서 (4,2) 장애물을 부쉈더니 그 자리에서 칩이 나왔다.
+            바로 옆 칸이라 오른쪽 한 번이면 걸음수 1로 먹는 자리였고, 실제로
+            경로도 그렇게 잡혀 있었다. 그런데 여기서 그 계획을 가로채 **마지막
+            남은 돌진(1 -> 0)** 을 썼다. 걸음수 1을 아끼자고 돌진을 버린 것이다.
+
+            칩 하나는 걸어가면 걸음수 최대 3이다. 돌진 하나가 걸음수 3보다
+            귀하므로(1550 대 45) 하나짜리는 언제나 걸어가는 편이 낫다.
         """
         if not self.cfg.use_dash or not self._can_use("dash"):
             return False
@@ -652,8 +684,18 @@ class ExploreEngine:
         row = scene.player.row
         span = range(ADVANCE_COL, min(N, ADVANCE_COL + self.cfg.dash_cells))
         mine = [(d.row, d.col) for d in scene.goals if d.row == row and d.col in span]
-        if not mine:
-            return False                  # 챙길 칩이 없으면 걸어간다 (돌진을 아낀다)
+        if len(mine) < DASH_MIN_CHIPS:
+            # 하나뿐이면 걸어간다. 걸음수 최대 3이면 먹는데, 돌진은 그보다 귀하다.
+            if mine:
+                self.log(f"[돌진] 내 행의 칩이 {sorted(mine)} 하나뿐이라 걸어서 "
+                         f"챙깁니다 (돌진을 아낍니다).")
+            return False
+
+        blocked = [c for c in span if scene.kind_at(row, c) == Kind.OBSTACLE]
+        if not blocked:
+            self.log(f"[돌진] {row}행 앞이 뚫려 있어 걸어서 칩 {sorted(mine)} 을(를) "
+                     f"챙깁니다 (돌진을 아낍니다).")
+            return False
 
         missed = [(d.row, d.col) for d in scene.goals
                   if d.row != row and d.col in span]
@@ -663,12 +705,63 @@ class ExploreEngine:
             return False
 
         if self._press_green_button():
+            self.trace.write("dash", row=row, chips=[list(m) for m in mine],
+                             left=self.counts.dash)
             self.log(f"[돌진] 내 행의 칩 {sorted(mine)} 을(를) 챙기며 세 칸 "
                      f"전진합니다 (남은 돌진 "
                      f"{self.counts.dash if self.counts.dash is not None else '?'}).")
             self._last_layout = None
             return True
         return False
+
+    def _plan(self, scene: Scene):
+        """경로를 세운다. **길이 있으면 아이템을 쓰지 않는다.**
+
+        먼저 장애물을 벽으로 두고(부수기 없이) 계산한다. 그것만으로 나아갈 수
+        있으면 그 경로를 쓴다. 아무 데도 못 갈 때만 장애물을 '부수기 1개짜리
+        통행료가 붙은 칸'으로 보고 다시 계산한다.
+
+        왜 이렇게 하나 (실측 299초, 부수기 5회를 전부 뜯어봤다)
+            다섯 번 모두 **한 번만 전진하면 공짜로 먹을 수 있는 칩**이었다.
+            판은 오른쪽으로 갈 때마다 왼쪽으로 한 열 밀린다(19장). 그러니
+            (r,1) 을 막고 선 장애물은 다음 전진에 0열로 밀려나고, (r,2) 에
+            있던 칩이 그 자리로 들어온다. 한 박자만 기다리면 걸어서 닿는다.
+
+            예: 176.3초 판. 플레이어 (2,1), 칩 (4,2), (3,1) 이 장애물.
+                    . X . . .        전진하면              . . . . ?
+                    . . X . .        ->                    . X . . ?
+                    . P X . .                              P X . . ?
+                    X X . . O                              X . . O ?
+                    . . G . .                              . G . . ?
+                (3,1) 이 비고 칩이 (4,1) 로 온다. 걸어서 두 칸이면 먹는다.
+                그런데 부수기를 써 버렸고, 2.3초 뒤 같은 자리를 또 부쉈다.
+
+        그래도 정말 막힌 판에서는 부순다. 부수지 않으면 칩을 영영 못 먹는
+        경우가 있고(298초에 20건), 그때는 아껴 봐야 소용이 없다.
+        """
+        def usable(plan, item_free: bool) -> bool:
+            if plan.kind == PlanKind.NONE or len(plan.path) < 2:
+                return False
+            if not item_free:
+                return True
+            # **장애물을 밟는 길은 공짜가 아니다.** 부수기를 못 쓴다고 알려도
+            # '갈 데가 아주 없을 때'의 마지막 수단으로 장애물 칸을 내주는
+            # 자리가 있어서, 그걸 공짜 길로 착각하면 안 된다.
+            return not any(scene.kind_at(r, c) == Kind.OBSTACLE
+                           for r, c in plan.path[1:])
+
+        free = plan_route(scene, self.cfg.item_max_detour, cost_break=None)
+        if usable(free, True):
+            return free
+        cost = self._break_cost()
+        if cost is None:
+            return free                   # 부술 수단이 없다. 이게 최선이다
+        paid = plan_route(scene, self.cfg.item_max_detour, cost_break=cost)
+        if usable(paid, False):
+            self.log("[경로] 부수지 않고는 갈 데가 없어 장애물을 지나는 길을 "
+                     "다시 세웁니다.")
+            return paid
+        return free
 
     def _break_cost(self) -> float | None:
         """장애물 하나를 부수는 값을 걸음수 몇 개어치로 볼지.
@@ -965,6 +1058,7 @@ class ExploreEngine:
         same = self._shift_score(a, b, 0, 0, va, vb)
         # 클릭이 먹었는지 판단하는 데도 쓰려고 남겨 둔다(_do_move 참고).
         self._last_same = same
+        self._last_moved = moved
         # '한 칸 밀림'이 '그대로'보다 뚜렷하게 잘 맞아야 인정한다.
         return moved < 0.06 and moved < same * 0.6
 
@@ -1048,6 +1142,17 @@ class ExploreEngine:
 
             ok = False
             scrolled = False
+            # **한 번만 뜨는 신호**인가. 걸음수 감소가 그렇다 — 최솟값을 갱신하고
+            # 나면 다음 폴링부터는 다시 뜨지 않는다. 그런 신호는 confirm_repeat
+            # (연속 확인 횟수) 를 적용하면 안 된다.
+            #
+            # 실측 회귀(299초): 실패로 적힌 이동 12건이 전부 이 경우였다.
+            # 폴링 기록을 보면 #2 에서 ok=True 가 떴는데 #3 이 False 라
+            # confirmed 가 0 으로 되돌아갔고, 그 뒤로는 걸음수가 다시 줄 리
+            # 없으니 영영 확인되지 않았다. 그러고는 '클릭이 안 먹었다'며 같은
+            # 칸을 다시 눌렀는데, 거기엔 이미 플레이어가 서 있어서 안내문이
+            # 떴다. 안내문 12번 = 실패 12번으로 정확히 맞아떨어진다.
+            conclusive = False
             if pos == to:
                 ok = True
             elif self._steps_dropped(after):
@@ -1071,6 +1176,7 @@ class ExploreEngine:
                 # 보유량이 2.5초 동안 한 픽셀도 안 바뀌었다) 그 칸은 전부
                 # 플레이어가 선 자리였다.
                 ok = True
+                conclusive = True
                 scrolled = (direction == "RIGHT" and frm[1] == PLAYER_MAX_COL)
                 self._path_dirty = True
             elif self._arrived_by_motion(seen_frames, use_grid, to):
@@ -1086,10 +1192,19 @@ class ExploreEngine:
             elif pos is None:
                 ok = False
 
-            if not ok and pos in (frm, None):
+            if not ok:
                 self._last_same = None
+                self._last_moved = None
                 # 게임판이 통째로 스크롤해서 플레이어가 화면상 같은 칸에
                 # 남아 있는 경우를 확인한다.
+                #
+                # 예전에는 `pos in (frm, None)` 일 때만 봤다. 그런데 전진은
+                # 스크롤 때문에 플레이어가 화면상 제자리에 남으므로 이 검사가
+                # **전진을 확인하는 유일한 수단**이고, 빠른 추적이 헛값을 하나
+                # 내면 그대로 건너뛰어 버렸다. 실측 298초에서 실패로 기록된
+                # 이동 18건 중 13건이 사실은 성공한 이동이었고, 그 13건이
+                # 제한시간 2.0~3.5초를 전부 소진했다(성공은 0.59초).
+                # 그래서 못 맞힌 폴링에서는 **언제나** 스크롤을 확인한다.
                 key = (use_grid.xs[0], use_grid.ys[0], use_grid.xs[-1], use_grid.ys[-1])
                 if before_sig is None or before_sig_grid != key:
                     before_sig = self._cell_signature(before, use_grid)
@@ -1098,6 +1213,18 @@ class ExploreEngine:
                                            before_sig):
                     ok = True
                     scrolled = True
+
+            # 이 폴링에서 무엇이 보였는지 통째로 남긴다. 확인이 왜 실패했는지는
+            # 눈으로 볼 수 없어서, 남기지 않으면 매번 추측으로 고치게 된다.
+            self.trace.write("poll", n=polls, dir=direction,
+                             **{"from": list(frm)}, to=list(to),
+                             pos=list(pos) if pos else None,
+                             same=(None if self._last_same is None
+                                   else round(self._last_same, 4)),
+                             moved=(None if self._last_moved is None
+                                    else round(self._last_moved, 4)),
+                             ok=bool(ok), scrolled=bool(scrolled),
+                             since=round(time.time() - clicked_at, 2))
 
             # **판이 그대로면 클릭이 먹지 않은 것이다.**
             #
@@ -1147,7 +1274,7 @@ class ExploreEngine:
 
             if ok:
                 confirmed += 1
-                if confirmed >= self.cfg.confirm_repeat:
+                if conclusive or confirmed >= self.cfg.confirm_repeat:
                     self.stats.moves += 1
                     return True, use_grid, scrolled
             else:
@@ -1270,15 +1397,26 @@ class ExploreEngine:
                     | set(scene.item_kinds))
 
                 # --- 2) 전체 경로 계산 --------------------------------
-                # 장애물은 부수기 1개면 지나가는 칸이다(25장). 그 값을 지금
-                # 가진 양의 비로 정해 넘긴다. 부수기를 쓸 수 없으면 None 을
-                # 넘겨 예전처럼 벽으로 취급한다.
-                plan = plan_route(scene, self.cfg.item_max_detour,
-                                  cost_break=self._break_cost())
+                plan = self._plan(scene)
 
                 # 분석이 끝난 지금 다시 정지를 확인한다. 분석 도중에 정지를 눌렀다면
                 # 여기서 빠져나가므로 이전 경로가 뒤늦게 실행되지 않는다.
                 self._check_stop()
+
+                self.trace.write(
+                    "cycle", n=self.stats.cycles + 1,
+                    player=[scene.player.row, scene.player.col] if scene.player else None,
+                    player_note=scene.player.note if scene.player else "",
+                    board=trace.board_rows(scene.cells),
+                    chips=[[d.row, d.col] for d in scene.goals],
+                    items={f"{r},{c}": k for (r, c), k in scene.item_kinds.items()},
+                    highlights=[list(h) for h in scene.highlights],
+                    counts={"steps": self.counts.steps, "break": self.counts.break_,
+                            "dash": self.counts.dash},
+                    break_cost=self._break_cost(),
+                    plan=plan.kind.value, path=[list(c) for c in plan.path],
+                    reason=plan.reason, notes=list(scene.notes))
+                self.trace.frame(self.stats.cycles + 1, img)
 
                 drawn = overlay.draw(img, grid, scene, plan.path,
                                      f"{plan.kind.value} | {' '.join(plan.moves)}")
@@ -1332,9 +1470,14 @@ class ExploreEngine:
                         self._check_stop()
                         screen = self.window.click_client(cx, cy, self.cfg.move_duration)
                         self.stats.obstacles_broken += 1
+                        self.trace.write("break", at=list(nxt),
+                                         left=self.counts.break_)
                         self.log(f"[클릭] 장애물 파괴 시도 {nxt} | 클라이언트({cx},{cy}) -> "
                                  f"화면{screen}")
-                        self._sleep(0.45)
+                        # 부서지는 연출이 끝나고 **그 아래에 있던 것이 드러날
+                        # 때까지** 기다린다. 실측 66.7초: (4,2) 를 부수니 그
+                        # 자리에서 칩이 나왔다.
+                        self._sleep(self.cfg.break_settle_sec)
                         # 안내문이 떴다면 이 장애물은 부술 수 없는 것이다.
                         shot = self._capture()
                         if shot is not None and self._toast_visible(shot):
@@ -1353,9 +1496,18 @@ class ExploreEngine:
                                          "중단합니다. 이후에는 길이 열릴 때까지 "
                                          "기다립니다.")
                             self._wait_toast_clear()
+                        # 여기서 기억해 둔 배치(_last_layout)를 지우고 싶어지는데,
+                        # **지우면 안 된다.** 그 값은 매 사이클 새로 인식한 판에서
+                        # 다시 계산하므로, 정말 부서졌다면 저절로 달라진다. 반대로
+                        # 안내문 없이 조용히 안 부서지는 경우에 지워 버리면 갇힌
+                        # 것을 영영 알아채지 못하고 같은 자리만 계속 두드린다.
                         break
 
+                    _t0 = time.time()
                     ok, grid, scrolled = self._do_move(grid, current, nxt, direction)
+                    self.trace.write("move", dir=direction, **{"from": list(current)},
+                                     to=list(nxt), ok=bool(ok), scrolled=bool(scrolled),
+                                     secs=round(time.time() - _t0, 2))
                     if not ok:
                         break     # 고속 경로 폐기 -> 바깥 루프에서 전체 재인식
                     current = nxt
@@ -1388,6 +1540,7 @@ class ExploreEngine:
             self.log(f"[종료] 사이클 {s.cycles} / 이동 {s.moves} / 실패 {s.failed_moves} "
                      f"/ 안내 {s.blocked_toasts} / 장애물 클릭 {s.obstacles_broken} "
                      f"/ 초록버튼 {s.green_button_uses}")
+            self.trace.close()
             self.status("정지됨")
 
     def _sleep(self, sec: float) -> None:

@@ -541,6 +541,58 @@ def test_스크롤한_뒤에는_남은_경로를_버린다():
     assert scrolled is True, "스크롤로 성공한 것을 알려주지 않았습니다"
 
 
+def test_빠른_추적이_헛값을_내도_스크롤을_확인한다():
+    """전진은 스크롤 확인이 **유일한 증거**다. 그 앞을 막으면 안 된다.
+
+    판이 밀리면 플레이어는 화면상 제자리에 남으므로 '목표 칸 도착'으로도
+    '움직인 칸'으로도 확인되지 않는다. 예전에는 빠른 추적 결과가 출발칸이나
+    None 일 때만 스크롤을 봤는데, 색 기반 추적이 엉뚱한 칸을 하나 내면 그대로
+    건너뛰어 이동을 실패로 적었다.
+
+    실측 회귀(298초): 실패로 적힌 이동 18건 중 13건이 사실은 성공이었고,
+    그 13건이 제한시간 2.0~3.5초를 전부 썼다(성공한 이동은 0.59초).
+    전체 시간의 12%를 여기서 버렸다.
+    """
+    base = synth.make_board(SCROLL_BASE)
+    after = synth.make_board(_scrolled_layout(SCROLL_BASE, 0, 1))
+    g = board.detect_board(base)
+    eng = _engine([base, after, after, after, after])
+    # 빠른 추적이 출발칸도 목표칸도 아닌 말이 안 되는 칸을 낸다고 하자.
+    eng._track_player = lambda img, grid: (4, 4)
+    ok, _, scrolled = eng._do_move(g, (1, 1), (1, 2), "RIGHT")
+    assert ok is True, "추적이 헛값을 냈다고 스크롤 확인을 건너뛰었습니다"
+    assert scrolled is True
+
+
+def test_걸음수가_줄면_한_번만_보고도_성공으로_친다():
+    """걸음수 감소는 **한 번만 뜨는 신호**다. 연속 확인을 요구하면 안 된다.
+
+    걸음수는 지금까지 본 최솟값과 견주므로, 줄어든 것을 한 번 보고 나면 그
+    값이 새 최솟값이 되어 다음 폴링부터는 다시 뜨지 않는다. 그런데 성공을
+    연속 confirm_repeat 번 확인하도록 돼 있어서, 걸음수로만 확인되는 이동은
+    구조적으로 절대 성공 처리되지 않았다.
+
+    실측 회귀(299초): 실패로 적힌 이동 12건 전부가 이 경우였다. 폴링 기록에
+    ok=True 가 한 번 떴다가 다음 폴링에서 0 으로 되돌아간 것이 남아 있다.
+    그 뒤 '클릭이 안 먹었다'며 같은 칸을 다시 눌렀고, 거기엔 이미 플레이어가
+    서 있어서 안내문이 떴다(안내문 12번 = 실패 12번).
+    """
+    stay = _frame((1, 1))
+    eng = _engine([stay] * 8, confirm_repeat=2, watch_counters=True)
+    eng._track_player = lambda img, grid: (1, 1)      # 끝내 목표 칸을 못 찾는다
+    calls = []
+
+    def steps_dropped(img):
+        calls.append(1)
+        return len(calls) == 2                        # 딱 한 번만 뜬다
+
+    eng._steps_dropped = steps_dropped
+    g = board.detect_board(stay)
+    ok, _, scrolled = eng._do_move(g, (1, 1), (2, 1), "DOWN")
+    assert ok is True, "걸음수가 줄었는데도 실패로 봤습니다"
+    assert scrolled is False, "세로 이동을 스크롤로 셌습니다"
+
+
 def test_제자리_도착으로_성공하면_스크롤_플래그가_꺼져_있다():
     old, new = _frame((1, 1)), _frame((1, 2))
     eng = _engine([old, new, new, new, new])
@@ -957,6 +1009,64 @@ def _with_player(scene, row, col):
     return scene
 
 
+# ------------------- 길이 있으면 아이템을 쓰지 않는다 (실측 회귀)
+def _board_scene(layout):
+    """'.'=빈칸 X=장애물 P=플레이어 G=칩"""
+    from digimonup.vision.recognize import Detection, Kind, Scene
+    sym = {".": Kind.EMPTY, "X": Kind.OBSTACLE, "P": Kind.PLAYER, "G": Kind.GOAL}
+    cells = [[sym[ch] for ch in row] for row in layout]
+    sc = Scene(grid=None, cells=cells)
+    for r in range(5):
+        for c in range(5):
+            if cells[r][c] == Kind.PLAYER:
+                sc.player = Detection(Kind.PLAYER, r, c, 1.0)
+            elif cells[r][c] == Kind.GOAL:
+                sc.goals.append(Detection(Kind.GOAL, r, c, 0.9))
+    return sc
+
+
+def test_공짜로_갈_수_있으면_부수지_않는다():
+    """실측 회귀(276.3초): **한 번만 전진하면 공짜로 먹을 칩**에 부수기를 썼다.
+
+    판은 오른쪽으로 갈 때마다 왼쪽으로 한 열 밀린다(19장). (3,1) 을 막고 선
+    장애물은 다음 전진에 (3,0) 으로 밀려나고, (3,2) 에 있던 칩이 (3,1) 로
+    온다. 2행에서 그냥 전진한 뒤 한 칸 내려가면 걸음수 둘로 먹는 자리였다.
+
+    299초 기록의 부수기 5회 중 3회가 이런 경우였다(35.6초·168.5초·276.3초).
+    나머지 2회는 정말 아무 데도 못 가는 판이었다 — 아래 test_정말_막혔으면 참고.
+    """
+    from digimonup.vision.recognize import Kind
+    layout = [
+        ".....",
+        "..X..",
+        ".P...",
+        ".XG..",
+        "...X.",
+    ]
+    eng = _engine([])
+    eng.counts = Counters(steps=1300, break_=55, dash=2)
+    sc = _board_scene(layout)
+    plan = eng._plan(sc)
+    hit = [(r, c) for r, c in plan.path[1:] if layout[r][c] == "X"]
+    assert not hit,         f"부수지 않고도 갈 수 있는데 {hit} 를 부수려 합니다: {plan.path}"
+
+
+
+def test_정말_막혔으면_부순다():
+    """아껴 쓰되, 부수지 않으면 아무 데도 못 가는 판에서는 부순다."""
+    eng = _engine([])
+    eng.counts = Counters(steps=1300, break_=55, dash=2)
+    plan = eng._plan(_board_scene([
+        "XX...",
+        "XX...",
+        "XP...",
+        "XX...",
+        "XX...",
+    ]))
+    assert plan.path and len(plan.path) >= 2,         f"부수면 갈 수 있는데 멈춰 섰습니다: {plan.describe()}"
+
+
+
 def test_다른_행의_칩을_지나치게_되면_돌진하지_않는다():
     """돌진은 세 칸을 건너뛴다. 그 칩들은 화면 밖으로 밀려 영영 못 먹는다."""
     eng = _engine([])
@@ -969,16 +1079,57 @@ def test_다른_행의_칩을_지나치게_되면_돌진하지_않는다():
     assert pressed == []
 
 
-def test_같은_행의_칩은_돌진으로_챙긴다():
-    """실측: 같은 행 2열 칩을 두고 돌진하니 보유량 267.8K -> 268.0K."""
+def test_막힌_행의_칩은_돌진으로_챙긴다():
+    """실측: 같은 행 2열 칩을 두고 돌진하니 보유량 267.8K -> 268.0K.
+
+    단 **길이 막혔을 때만** 쓴다 (아래 test_뚫린_행에서는_걸어서_챙긴다 참고).
+    """
+    from digimonup.vision.recognize import Kind
     eng = _engine([])
     eng.counts = Counters(steps=100, break_=10, dash=5)
     pressed = []
     eng._press_green_button = lambda: pressed.append(1) or True
 
     sc = _with_player(_scene_with_goals([(0, 2), (0, 4)]), 0, 1)
+    sc.cells[0][3] = Kind.OBSTACLE          # 걸어서는 (0,4) 를 못 지나간다
     assert eng._dash_if_worth(sc) is True
     assert pressed == [1]
+
+
+def test_뚫린_행에서는_걸어서_챙긴다():
+    """실측 회귀(299초): 돌진한 두 번 다 **장애물이 하나도 없는 행**이었다.
+
+    63.7초 플레이어 (0,1) / 칩 (0,2)·(0,4), 258.7초 플레이어 (0,1) /
+    칩 (0,2)·(0,3). 둘 다 오른쪽만 누르면 걸음수 몇 개로 전부 먹는 자리였다.
+    아이템은 길이 막혔을 때 쓰는 것이지, 뚫린 길에서 걸음수를 아끼자고
+    쓰는 것이 아니다.
+    """
+    eng = _engine([])
+    eng.counts = Counters(steps=1300, break_=55, dash=2)
+    eng._press_green_button = lambda: (_ for _ in ()).throw(
+        AssertionError("뚫린 길인데 돌진했습니다"))
+    sc = _with_player(_scene_with_goals([(0, 2), (0, 4)]), 0, 1)
+    assert eng._dash_if_worth(sc) is False
+
+
+
+def test_칩이_하나뿐이면_걸어서_챙긴다():
+    """실측 회귀(67.5초): **막다른 길에서 부순 자리에 나온 칩**에 돌진을 썼다.
+
+    (4,2) 장애물을 부쉈더니 그 자리에 칩이 드러났다. 바로 옆 칸이라 오른쪽
+    한 번, 걸음수 1이면 먹는 자리였고 경로도 그렇게 잡혀 있었다. 그런데 그
+    계획을 가로채 **마지막 남은 돌진(1 -> 0)** 을 썼다.
+
+    칩 하나는 걸어가야 걸음수 최대 3이다. 돌진은 그보다 훨씬 귀하다
+    (남은 양 1550 대 45). 하나짜리는 언제나 걸어간다.
+    """
+    eng = _engine([])
+    eng.counts = Counters(steps=1540, break_=59, dash=1)
+    eng._press_green_button = lambda: (_ for _ in ()).throw(
+        AssertionError("한 걸음이면 되는 칩에 돌진을 썼습니다"))
+    sc = _with_player(_scene_with_goals([(4, 2)]), 4, 1)
+    assert eng._dash_if_worth(sc) is False
+
 
 
 def test_챙길_칩이_없으면_돌진을_아낀다():
