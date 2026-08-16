@@ -7,19 +7,15 @@
 
 from __future__ import annotations
 
-# 이 도구는 tools/ 안에 있지만 루트의 common / emulator_window 등을 가져다 쓴다.
-# 실행 방식(python tools/x.py, 배치 파일, IDE)에 상관없이 import 가 되도록
-# 루트를 sys.path 에 직접 넣는다. 다른 import 보다 먼저 와야 한다.
-import os
-import sys
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import _bootstrap  # 저장소 루트를 sys.path 에 넣는다. 맨 먼저 가져온다
 
 import os
-import sys
 import time
 
+
 import cv2
+
+import cropsave
 
 from digimonup.base.common import BASE_DIR, enable_dpi_awareness, ensure_windows, grab_screen
 from digimonup.base.imgio import imwrite
@@ -55,27 +51,14 @@ def main() -> int:
     print(f"화면 캡처 완료: {screen.shape[1]}x{screen.shape[0]}")
     print("\n창이 열리면 버튼 영역을 마우스로 드래그한 뒤 Enter 를 누르세요. (취소: c)")
 
-    win = "Select button area - drag then press ENTER"
-    cv2.namedWindow(win, cv2.WINDOW_NORMAL)
-
-    # 화면이 커도 창이 잘리지 않도록 축소해서 보여주고, 좌표는 원본 기준으로 되돌린다.
-    max_w, max_h = 1280, 720
-    scale = min(max_w / screen.shape[1], max_h / screen.shape[0], 1.0)
-    view = cv2.resize(screen, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA) if scale < 1.0 else screen
-    cv2.resizeWindow(win, view.shape[1], view.shape[0])
-
-    roi = cv2.selectROI(win, view, showCrosshair=True, fromCenter=False)
-    cv2.destroyAllWindows()
-    cv2.waitKey(1)
-
-    x, y, w, h = roi
-    if w == 0 or h == 0:
+    # 축소해서 보여주고 좌표를 원본으로 되돌리는 일은 cropsave 가 한 벌로 맡는다.
+    # 전체 모니터라 창을 더 크게(1280x720) 잡는다.
+    crop = cropsave.crop_by_drag(screen, "Select button area - drag then press ENTER",
+                                 max_w=1280, max_h=720)
+    if crop is None:
         print("선택이 취소되었습니다.")
         return 1
-
-    inv = 1.0 / scale
-    x, y, w, h = int(x * inv), int(y * inv), int(w * inv), int(h * inv)
-    crop = screen[y:y + h, x:x + w]
+    h, w = crop.shape[:2]
 
     out_dir = os.path.join(BASE_DIR, "templates")
     os.makedirs(out_dir, exist_ok=True)
@@ -93,8 +76,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    try:
-        sys.exit(main())
-    except KeyboardInterrupt:
-        print("\n중단되었습니다.")
-        sys.exit(130)
+    _bootstrap.run_main(main)

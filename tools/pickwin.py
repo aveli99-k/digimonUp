@@ -7,10 +7,7 @@ MuMuPlayer 만 적혀 있었다(여러 앱플레이어를 지원하기 전 문�
 
 from __future__ import annotations
 
-import os
-import sys
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import _bootstrap  # noqa: F401  (저장소 루트를 sys.path 에 넣는다. 맨 먼저)
 
 from digimonup.win.emulator_window import enumerate_candidates  # noqa: E402
 

@@ -13,12 +13,11 @@ pickwin.py 와 같은 이유로 뽑아냈다. capture_explore.py 의 본문은 �
 
 from __future__ import annotations
 
+import _bootstrap  # noqa: F401  (저장소 루트를 sys.path 에 넣는다. 맨 먼저)
+
 import os
-import sys
+import time
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-import time  # noqa: E402
 
 import cv2  # noqa: E402
 
@@ -42,6 +41,33 @@ def choose(title: str, targets: dict[str, tuple[str, str]]):
     return targets[choice]
 
 
+def crop_by_drag(img, win_title: str = "Drag area then press ENTER",
+                 max_w: int = 900, max_h: int = 900):
+    """창을 띄워 마우스로 영역을 드래그하게 하고 그 부분을 잘라 준다.
+
+    화면이 커도 창이 잘리지 않도록 **축소해서 보여주고, 좌표는 원본 기준으로
+    되돌린다.** 이 되돌리기를 빠뜨리면 엉뚱한 데가 잘리는데 그림만 보고는
+    알아채기 어렵다. 그래서 한 벌만 둔다(capture.py 와 여기 두 벌이었다).
+
+    취소하거나 폭·높이가 0 이면 None.
+    """
+    cv2.namedWindow(win_title, cv2.WINDOW_NORMAL)
+    scale = min(max_w / img.shape[1], max_h / img.shape[0], 1.0)
+    view = (cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+            if scale < 1.0 else img)
+    cv2.resizeWindow(win_title, view.shape[1], view.shape[0])
+    roi = cv2.selectROI(win_title, view, showCrosshair=True, fromCenter=False)
+    cv2.destroyAllWindows()
+    cv2.waitKey(1)
+
+    x, y, w, h = roi
+    if w == 0 or h == 0:
+        return None
+    inv = 1.0 / scale
+    x, y, w, h = int(x * inv), int(y * inv), int(w * inv), int(h * inv)
+    return img[y:y + h, x:x + w]
+
+
 def capture_and_crop(desc: str, out_root: str, folder: str,
                      countdown: int = 5) -> int:
     """세고 -> 창을 캡처하고 -> 드래그한 영역을 저장한다. 종료 코드를 돌려준다."""
@@ -62,23 +88,11 @@ def capture_and_crop(desc: str, out_root: str, folder: str,
     print(f"캡처 완료: {img.shape[1]}x{img.shape[0]} (클라이언트 영역)")
     print("\n창이 열리면 영역을 드래그한 뒤 Enter. (취소: c)")
 
-    win = "Drag area then press ENTER"
-    cv2.namedWindow(win, cv2.WINDOW_NORMAL)
-    scale = min(900 / img.shape[1], 900 / img.shape[0], 1.0)
-    view = (cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-            if scale < 1.0 else img)
-    cv2.resizeWindow(win, view.shape[1], view.shape[0])
-    roi = cv2.selectROI(win, view, showCrosshair=True, fromCenter=False)
-    cv2.destroyAllWindows()
-    cv2.waitKey(1)
-
-    x, y, w, h = roi
-    if w == 0 or h == 0:
+    crop = crop_by_drag(img)
+    if crop is None:
         print("선택이 취소되었습니다.")
         return 1
-    inv = 1.0 / scale
-    x, y, w, h = int(x * inv), int(y * inv), int(w * inv), int(h * inv)
-    crop = img[y:y + h, x:x + w]
+    h, w = crop.shape[:2]
 
     out_dir = os.path.join(out_root, folder)
     n = 1

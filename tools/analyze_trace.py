@@ -3,7 +3,6 @@
 쓰는 법
     python tools\\analyze_trace.py                    가장 최근 기록
     python tools\\analyze_trace.py debug\\trace\\0816_1
-    python tools\\analyze_trace.py --chips            칩 관련만 자세히
 
 답하는 질문
     1. 칩을 놓쳤는가          화면에 있던 칩이 안 먹힌 채 왼쪽으로 사라졌는가
@@ -21,10 +20,10 @@
 from __future__ import annotations
 
 import collections
-import os
-import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import _bootstrap  # 저장소 루트를 sys.path 에 넣는다. 맨 먼저 가져온다
+
+import sys
 
 from digimonup.base import trace                      # noqa: E402
 
@@ -40,7 +39,6 @@ def _walkable(board, r, c):
 
 def _reachable_rows(board, start_row):
     """0~1열만 걸어서 닿을 수 있는 행들 (장애물은 못 지나간다)."""
-    seen = {(start_row, 0), (start_row, 1)}
     seen = set()
     stack = [(start_row, 1), (start_row, 0)]
     while stack:
@@ -103,7 +101,8 @@ def analyze(rows: list[dict]) -> None:
                     for r in range(N) for c in range(N - 1)) / float(N * (N - 1))
         stay = sum(bef["board"][r][c] == aft["board"][r][c]
                    for r in range(N) for c in range(N)) / float(N * N)
-        if (m["dir"] == "RIGHT" and shift >= 0.85 and shift > stay) or            (m["dir"] != "RIGHT" and aft.get("player") == m["to"]):
+        if ((m["dir"] == "RIGHT" and shift >= 0.85 and shift > stay)
+                or (m["dir"] != "RIGHT" and aft.get("player") == m["to"])):
             fake.append(m)
     lost_sec = sum(m.get("secs", 0.0) for m in fake)
     print("")
@@ -282,4 +281,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    _bootstrap.run_main(main)

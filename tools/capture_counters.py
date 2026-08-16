@@ -20,11 +20,9 @@
 
 from __future__ import annotations
 
-# 이 도구는 tools/ 안에 있지만 루트의 counters 등을 가져다 쓴다.
-import os
-import sys
+import _bootstrap  # 저장소 루트를 sys.path 에 넣는다. 맨 먼저 가져온다
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import os
 
 import cv2                                                    # noqa: E402
 
@@ -118,8 +116,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    try:
-        sys.exit(main())
-    except KeyboardInterrupt:
-        print("\n중단되었습니다.")
-        sys.exit(130)
+    _bootstrap.run_main(main)

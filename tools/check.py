@@ -6,16 +6,9 @@
 
 from __future__ import annotations
 
-# 이 도구는 tools/ 안에 있지만 루트의 common / emulator_window 등을 가져다 쓴다.
-# 실행 방식(python tools/x.py, 배치 파일, IDE)에 상관없이 import 가 되도록
-# 루트를 sys.path 에 직접 넣는다. 다른 import 보다 먼저 와야 한다.
-import os
-import sys
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import _bootstrap  # 저장소 루트를 sys.path 에 넣는다. 맨 먼저 가져온다
 
 import os
-import sys
 import time
 
 import cv2
@@ -27,8 +20,12 @@ from digimonup.base.common import (
     find_template,
     grab_screen,
     load_config,
-    load_template,
+    load_button_templates,
 )
+# 저장은 imgio 를 거친다. 이 저장소의 경로에는 한글이 들어 있어서 cv2.imwrite 는
+# 조용히 실패한다(imgio 참고). 이 import 가 아예 빠져 있어서, 도구가 할 일을
+# 다 하고 마지막 줄에서 NameError 로 죽고 있었다.
+from digimonup.base.imgio import imwrite
 
 
 def main() -> int:
@@ -37,8 +34,7 @@ def main() -> int:
     cfg = load_config()
 
     try:
-        tpl_match = load_template(cfg["match_template"])
-        tpl_giveup = load_template(cfg["giveup_template"])
+        tpl_match, tpl_giveup = load_button_templates(cfg)
     except (FileNotFoundError, ValueError) as e:
         print(e)
         return 1
@@ -89,8 +85,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    try:
-        sys.exit(main())
-    except KeyboardInterrupt:
-        print("\n중단되었습니다.")
-        sys.exit(130)
+    _bootstrap.run_main(main)

@@ -24,12 +24,8 @@ reward 는 뒤에서 반짝이는 이펙트 때문에 프레임마다 조금씩 
 
 from __future__ import annotations
 
-# 이 도구는 tools/ 안에 있지만 루트의 모듈을 가져다 쓴다. 실행 방식에 상관없이
-# import 가 되도록 루트를 sys.path 에 직접 넣는다. 다른 import 보다 먼저 와야 한다.
-import os
-import sys
+import _bootstrap  # 저장소 루트를 sys.path 에 넣는다. 맨 먼저 가져온다
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import cropsave  # noqa: E402
 
@@ -47,8 +43,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    try:
-        sys.exit(main())
-    except KeyboardInterrupt:
-        print("\n중단되었습니다.")
-        sys.exit(130)
+    _bootstrap.run_main(main)

@@ -16,11 +16,10 @@
 
 from __future__ import annotations
 
-# 이 도구는 tools/ 안에 있지만 루트의 paths 를 가져다 쓴다.
+import _bootstrap  # 저장소 루트를 sys.path 에 넣는다. 맨 먼저 가져온다
+
 import os
 import sys
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from PIL import Image, ImageDraw  # noqa: E402
 
@@ -152,4 +151,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    _bootstrap.run_main(main)

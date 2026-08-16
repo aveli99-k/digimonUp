@@ -21,12 +21,13 @@
 
 from __future__ import annotations
 
-import os
-import sys
 import threading
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import _bootstrap  # 저장소 루트를 sys.path 에 넣는다. 맨 먼저 가져온다
+
+import os
+import sys
 
 from digimonup.app import explore                       # noqa: E402
 from digimonup.base import imgio                        # noqa: E402
@@ -55,9 +56,10 @@ def main() -> int:
 
     # 사이클마다 오버레이(격자·인식·경로를 그린 그림)를 저장한다.
     #
-    # **그림을 그리는 그 자리에서 가로챈다.** 예전에는 plan_route 를 가로챘는데,
-    # 그때의 last_overlay 는 아직 **이전 사이클** 것이라 저장된 그림이 한 박자
-    # 밀렸다. 그 밀린 그림을 근거로 판단하다가 실제로 잘못된 결론을 냈다.
+    # **그림을 그리는 그 자리에서 가로챈다.** 예전에는 plan_route 를 가로채고
+    # 엔진이 들고 있던 그림을 꺼내 썼는데, 그때 그것은 아직 **이전 사이클** 것이라
+    # 저장된 그림이 한 박자 밀렸다. 그 밀린 그림을 근거로 판단하다가 실제로
+    # 잘못된 결론을 냈다.
     # 게다가 지금은 경로를 두 번 세우므로(아이템 없이 한 번, 부수며 한 번)
     # plan_route 가 사이클당 두 번 불려 그림도 두 배로 쌓였다.
     n = [0]
@@ -101,4 +103,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    _bootstrap.run_main(main)

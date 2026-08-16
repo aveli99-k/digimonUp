@@ -19,12 +19,9 @@ config.json 의 explore.window_title_hint 에 적으면 그 창만 쓴다.
 
 from __future__ import annotations
 
-# 이 도구는 tools/ 안에 있지만 루트의 board / emulator_window 등을 가져다 쓴다.
-# 실행 방식에 상관없이 import 가 되도록 루트를 sys.path 에 직접 넣는다.
-import os
-import sys
+import _bootstrap  # 저장소 루트를 sys.path 에 넣는다. 맨 먼저 가져온다
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import os
 
 from digimonup.vision import board                                          # noqa: E402
 from digimonup.base import imgio                                          # noqa: E402
@@ -77,6 +74,10 @@ def main() -> int:
         score = grid.confidence if grid else 0.0
         mark = "<-- 게임 화면으로 보입니다" if score >= 0.45 else ""
         print(f"    격자  : {score:.2f} {mark}")
+        if grid is not None:
+            # 세부 점수. 격자가 아슬아슬할 때 **어느 근거가 모자란지** 알려 준다.
+            print("    근거  : " + "  ".join(f"{k}={v}"
+                                            for k, v in grid.detail.items()))
 
         out = os.path.join(OUT_DIR, f"win{i}_0x{cand.hwnd:X}.png")
         if imgio.imwrite(out, img):
@@ -105,8 +106,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    try:
-        sys.exit(main())
-    except KeyboardInterrupt:
-        print("\n중단되었습니다.")
-        sys.exit(130)
+    _bootstrap.run_main(main)
