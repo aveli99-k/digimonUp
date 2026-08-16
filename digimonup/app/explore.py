@@ -146,6 +146,9 @@ class ExploreConfig:
     allow_obstacle_break: bool = True
     obstacle_break_max_failures: int = 2
     use_green_button: bool = True
+    # 칩이 안 보일 때 돌진(초록 버튼)으로 세 칸씩 나아간다.
+    # 실측: 돌진 1개 = 세 칸 전진, 걸음수 0. 일반 전진보다 언제나 이득이다.
+    use_dash: bool = True
     green_button_max_uses: int = 0      # 0 = 제한 없음
     blocked_wait_sec: float = 2.0
 
@@ -604,6 +607,33 @@ class ExploreEngine:
             self.log(f"[경로] 우회로도 없고 장애물도 부술 수 없습니다. "
                      f"{self.cfg.blocked_wait_sec:g}초 기다렸다가 다시 봅니다.")
             self._sleep(self.cfg.blocked_wait_sec)
+            return True
+        return False
+
+    def _dash_if_worth(self, scene: Scene) -> bool:
+        """돌진(우측 하단 초록 버튼)을 쓸 만하면 쓴다. 썼으면 True.
+
+        **실험으로 확정한 규칙**: 초록 버튼을 누르면
+            돌진 1개 소모 / 걸음수 0 소모 / 부수기 0 소모 / **세 칸 전진**
+        (실측: 거리 29,714m -> 29,717m, 돌진 46 -> 45, 걸음수 1699 그대로)
+
+        일반 전진은 클릭 한 번에 한 칸이고 걸음수도 1 든다. 돌진은 같은 클릭
+        한 번에 세 칸이고 걸음수는 0이다. **쓸 수 있으면 언제나 이득이다.**
+
+        다만 **칩이 보일 때는 쓰지 않는다.** 세 칸을 건너뛰는 동안 그 칩을
+        지나칠 수 있고, 지나치는지 아닌지는 아직 확인하지 못했다. 칩이 목적인
+        이상 확인 안 된 위험은 지지 않는다.
+        """
+        if not self.cfg.use_dash:
+            return False
+        if scene.goals:
+            return False                  # 칩이 보인다. 건너뛸 위험을 지지 않는다
+        if not self._can_use("dash"):
+            return False
+        if self._press_green_button():
+            self.log("[돌진] 칩이 없어 세 칸 전진합니다 "
+                     f"(남은 돌진 {self.counts.dash if self.counts.dash is not None else '?'}).")
+            self._last_layout = None
             return True
         return False
 
@@ -1218,6 +1248,10 @@ class ExploreEngine:
                     continue
 
                 # --- 갇혔는지 보고, 갇혔으면 부수거나 기다린다 --------
+                # --- 돌진: 칩이 없으면 공짜로 세 칸 나아간다 ----------
+                if self._dash_if_worth(scene):
+                    continue
+
                 if self._handle_blocked(scene, plan):
                     continue
 

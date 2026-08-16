@@ -920,3 +920,45 @@ def test_걸러낸_칩이_scene_goal_로_되살아나지_않는다():
 
     assert sc.goals == []
     assert sc.goal is None, "걸러낸 칩이 scene.goal 에 남아 있으면 안 됩니다"
+
+
+# ------------------- 돌진 (실험으로 확정한 규칙)
+from digimonup.vision.counters import Counters  # noqa: E402
+def test_칩이_보이면_돌진하지_않는다():
+    """돌진은 세 칸을 건너뛴다. 그 사이의 칩을 지나치는지 아직 모르므로,
+    칩이 목적인 이상 확인 안 된 위험은 지지 않는다."""
+    eng = _engine([])
+    eng.counts = Counters(steps=100, break_=10, dash=5)
+    pressed = []
+    eng._press_green_button = lambda: pressed.append(1) or True
+
+    sc = _scene_with_goals([(2, 3)])
+    assert eng._dash_if_worth(sc) is False
+    assert pressed == []
+
+
+def test_칩이_없으면_돌진한다():
+    """돌진 1개 = 세 칸 전진, 걸음수 0 (실측). 일반 전진보다 언제나 이득이다."""
+    eng = _engine([])
+    eng.counts = Counters(steps=100, break_=10, dash=5)
+    pressed = []
+    eng._press_green_button = lambda: pressed.append(1) or True
+
+    assert eng._dash_if_worth(_scene_with_goals([])) is True
+    assert pressed == [1]
+
+
+def test_돌진이_0개면_누르지_않는다():
+    eng = _engine([])
+    eng.counts = Counters(steps=100, break_=10, dash=0)
+    eng._press_green_button = lambda: (_ for _ in ()).throw(
+        AssertionError("돌진이 0인데 눌렀습니다"))
+    assert eng._dash_if_worth(_scene_with_goals([])) is False
+
+
+def test_설정으로_돌진을_끌_수_있다():
+    eng = _engine([], use_dash=False)
+    eng.counts = Counters(steps=100, break_=10, dash=5)
+    eng._press_green_button = lambda: (_ for _ in ()).throw(
+        AssertionError("꺼 두었는데 눌렀습니다"))
+    assert eng._dash_if_worth(_scene_with_goals([])) is False

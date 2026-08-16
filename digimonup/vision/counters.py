@@ -91,19 +91,28 @@ class Counters:
 _digits: dict[str, np.ndarray] | None = None
 
 
-def load_digits(force: bool = False) -> dict[str, np.ndarray]:
-    """templates/counters/<숫자>.png 를 불러 둔다. 한 번만 읽는다."""
+def load_digits(force: bool = False) -> dict[str, list[np.ndarray]]:
+    """templates/counters/ 의 숫자 그림을 불러 둔다. 한 번만 읽는다.
+
+    **한 숫자에 여러 장을 둘 수 있다.** 파일 이름의 첫 글자가 숫자면 그 숫자의
+    본보기로 본다: `1.png`, `1b.png`, `1_leading.png` 은 모두 '1' 이다.
+
+    같은 글자라도 자리에 따라 조금씩 다르게 그려진다. 실측: 걸음수 1699 의
+    맨 앞 '1' 은 0.57 인데 부수기 167 의 '1' 은 1.00 이었다. 한 장만 두면
+    이런 차이에 걸려 줄 전체를 못 읽는다(그 줄만 통째로 None 이 된다).
+    """
     global _digits
     if _digits is not None and not force:
         return _digits
-    out: dict[str, np.ndarray] = {}
+    out: dict[str, list[np.ndarray]] = {}
     for path in sorted(glob.glob(os.path.join(DIGIT_DIR, "*.png"))):
         name = os.path.splitext(os.path.basename(path))[0]
-        if len(name) != 1 or not name.isdigit():
+        if not name or not name[0].isdigit():
             continue
         img = imread_bgr(path)
         if img is not None and img.size:
-            out[name] = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            out.setdefault(name[0], []).append(
+                cv2.cvtColor(img, cv2.COLOR_BGR2GRAY))
     _digits = out
     return out
 
@@ -188,15 +197,20 @@ def split_glyphs(strip: np.ndarray) -> list[np.ndarray]:
     return [gray[y:y + bh, x:x + bw] for x, y, bw, bh in kept]
 
 
-def _match_glyph(glyph: np.ndarray, digits: dict[str, np.ndarray]) -> str | None:
-    """글자 하나를 0~9 중 하나로 읽는다. 자신 없으면 None."""
+def _match_glyph(glyph: np.ndarray,
+                 digits: dict[str, list[np.ndarray]]) -> str | None:
+    """글자 하나를 0~9 중 하나로 읽는다. 자신 없으면 None.
+
+    한 숫자에 본보기가 여러 장이면 그중 가장 잘 맞는 것으로 견준다.
+    """
     best_name, best_score = None, 0.0
-    for name, tpl in digits.items():
-        t = cv2.resize(tpl, (glyph.shape[1], glyph.shape[0]),
-                       interpolation=cv2.INTER_AREA)
-        score = float(cv2.matchTemplate(glyph, t, cv2.TM_CCOEFF_NORMED)[0][0])
-        if score > best_score:
-            best_name, best_score = name, score
+    for name, tpls in digits.items():
+        for tpl in tpls:
+            t = cv2.resize(tpl, (glyph.shape[1], glyph.shape[0]),
+                           interpolation=cv2.INTER_AREA)
+            score = float(cv2.matchTemplate(glyph, t, cv2.TM_CCOEFF_NORMED)[0][0])
+            if score > best_score:
+                best_name, best_score = name, score
     return best_name if best_score >= DIGIT_MATCH_MIN else None
 
 
