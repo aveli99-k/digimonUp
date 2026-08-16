@@ -180,8 +180,8 @@ def _pid_of(hwnd: int) -> int:
 
 def _client_size(hwnd: int) -> tuple[int, int]:
     try:
-        l, t, r, b = win32gui.GetClientRect(hwnd)
-        return r - l, b - t
+        x0, y0, x1, y1 = win32gui.GetClientRect(hwnd)
+        return x1 - x0, y1 - y0
     except Exception:
         return 0, 0
 
@@ -338,10 +338,10 @@ def capture_client(hwnd: int) -> np.ndarray | None:
     if not win32gui.IsWindow(hwnd):
         return None
     try:
-        l, t, r, b = win32gui.GetClientRect(hwnd)
+        x0, y0, x1, y1 = win32gui.GetClientRect(hwnd)
     except Exception:
         return None
-    w, h = r - l, b - t
+    w, h = x1 - x0, y1 - y0
     if w <= 0 or h <= 0:
         return None
 
@@ -395,8 +395,8 @@ class EmulatorWindow:
         return bool(win32gui.IsWindow(self.hwnd) and win32gui.IsWindow(self.top_hwnd))
 
     def client_size(self) -> tuple[int, int]:
-        l, t, r, b = win32gui.GetClientRect(self.hwnd)
-        return r - l, b - t
+        x0, y0, x1, y1 = win32gui.GetClientRect(self.hwnd)
+        return x1 - x0, y1 - y0
 
     # -- 캡처 -------------------------------------------------------------
     def capture(self) -> np.ndarray | None:

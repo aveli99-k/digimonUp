@@ -23,7 +23,7 @@ import pyautogui
 
 from digimonup.vision import popup
 from digimonup.base.common import (enable_dpi_awareness, find_template, grab_screen,
-                    is_stop_key_pressed, load_config, load_template, vk_of)
+                    is_stop_key_pressed, load_button_templates, load_config, vk_of)
 
 pyautogui.FAILSAFE = True
 pyautogui.PAUSE = 0
@@ -56,8 +56,7 @@ class NetworkMacro:
         cfg = load_config()
 
         try:
-            tpl_match = load_template(cfg["match_template"])
-            tpl_giveup = load_template(cfg["giveup_template"])
+            tpl_match, tpl_giveup = load_button_templates(cfg)
         except (FileNotFoundError, ValueError) as e:
             self.log("[준비 필요] " + str(e))
             self.log("capture.bat 을 실행해서 '매칭'/'포기' 버튼을 각각 캡처해주세요.")
@@ -145,7 +144,7 @@ class NetworkMacro:
 
                 m_found, m_pt, m_score = find_template(
                     screen, tpl_match, conf, multi_scale, scales, lock_match)
-                g_found, g_pt, g_score = find_template(
+                g_found, _, g_score = find_template(
                     screen, tpl_giveup, conf, multi_scale, scales, lock_giveup)
 
                 # 두 버튼은 같은 UI 라 표시 배율이 같다. 확정된 배율을 공유해 스캔을 줄인다.

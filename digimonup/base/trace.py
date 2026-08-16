@@ -20,7 +20,7 @@
 한 줄의 생김새 (cycle)
     {"t": 12.3, "kind": "cycle", "n": 7,
      "player": [1,1], "player_note": "움직임으로 확인",
-     "board": ["EEXEE", ...], "chips": [[0,3]], "chips_raw": [[0,3]],
+     "board": ["EEXEE", ...], "chips": [[0,3]],
      "items": {"2,4": "steps"}, "highlights": [[0,1],[1,0]],
      "counts": {"steps": 1782, "break": 68, "dash": 0},
      "break_cost": 12.0, "plan": "목적지", "path": [[1,1],[1,2]],

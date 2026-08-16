@@ -289,9 +289,6 @@ def test_아이템과_목적지는_지나갈_수_있다():
     ])
     plan = plan_route(scene)
     assert (0, 1) in plan.path, "아이템 칸을 피해 가면 안 됩니다"
-    assert pathfind.passable(Kind.ITEM)
-    assert pathfind.passable(Kind.GOAL)
-    assert not pathfind.passable(Kind.OBSTACLE)
 
 
 def test_경로를_방향_목록으로_바꾼다():

@@ -41,7 +41,6 @@ BFS 는 상하좌우 전부를 훑으므로 우회로가 있으면 반드시 찾
 
 from __future__ import annotations
 
-from collections import deque
 from dataclasses import dataclass
 from enum import Enum
 
@@ -85,11 +84,6 @@ class Plan:
             return f"{self.kind.value}: {self.reason}"
         route = " -> ".join(f"({r},{c})" for r, c in self.path)
         return f"{self.kind.value} [{len(self.path) - 1}칸] {route}  | {self.reason}"
-
-
-def passable(kind: Kind) -> bool:
-    """장애물만 못 지나간다. 아이템/목적지/빈칸은 지나갈 수 있다."""
-    return kind != Kind.OBSTACLE
 
 
 # 지나가면서 주우면 좋은 것의 값어치. 길이가 같은 경로가 여럿일 때만 쓴다.
@@ -361,34 +355,6 @@ def _schedule_value(cells, scene, dist, row: int, k: int,
     return memo[key]
 
 
-def _row_value(cells, scene, row: int) -> float:
-    """그 행에서 전진하면 **앞으로 들어올** 칩/아이템의 값어치 합.
-
-    2열 이상은 걸어서 갈 수 없다. 대신 그 행에 서서 전진하면 열 번호가 하나씩
-    줄어들며 결국 플레이어 자리로 들어온다. 그러니 '쫓아갈 목표'가 아니라
-    **어느 행에서 전진할지**를 정하는 근거로 써야 한다.
-
-    **가까운 칩이 더 급하다.** 2열 칩은 지금 이 전진에 들어오므로 지금 그 행에
-    있어야 한다. 4열 칩은 세 번 뒤라 그사이에 옮겨 가면 된다. 그래서 값어치를
-    남은 전진 횟수로 나눈다.
-
-        2열 칩 4/1 = 4.00    3열 칩 4/2 = 2.00    4열 칩 4/3 = 1.33
-
-    이렇게 하면 '지금 놓치면 영영 못 먹는 것'이 먼저가 되고, 먼 칩은 방향만
-    잡아 준다. 여러 칩이 여러 행에 흩어져 있어도 매 전진마다 가장 급한 것을
-    챙기면서 자연스럽게 다 주워진다.
-    """
-    total = 0.0
-    for c in range(ADVANCE_COL, N):
-        kind = cells[row][c]
-        if kind == Kind.ITEM and scene.item_kinds.get((row, c), "") in DETOUR_SKIP_KINDS:
-            continue          # 걸음수는 행을 옮겨 가면서까지 챙기지 않는다
-        value = PICKUP_VALUE.get(kind, 0)
-        if value:
-            total += value / (c - PLAYER_MAX_COL)     # 남은 전진 횟수로 나눈다
-    return total
-
-
 def _advance_for(cells, dist, prev, start: Cell, scene: Scene | None = None,
                  cost_break: float | None = None):
     """전진(스크롤)을 일으키는 경로를 만든다.
@@ -508,8 +474,9 @@ def plan_route(scene: Scene, item_max_detour: int = 2,
         if value:
             reason += f" — 그 행 앞쪽의 값어치 {value:.2f}"
         # 칩이 들어오는 행으로 가는 것이면 '목적지' 계획으로 부른다.
-        # 값어치 숫자로 가르지 않는다. 급한 정도로 나눈 값이라 먼 칩은 작게
-        # 나오는데, 칩을 향해 가는 것은 거리와 상관없이 칩 계획이다.
+        # 값어치 숫자로 가르지 않는다. value 는 **이번 전진에 들어올 칸 하나**의
+        # 값이라, 세 번 뒤에 들어올 칩을 향해 가는 중이면 0 으로 나온다.
+        # 칩을 향해 가는 것은 거리와 상관없이 칩 계획이다.
         row_has_chip = any(cells[row][c] == Kind.GOAL for c in range(ADVANCE_COL, N))
         kind = PlanKind.GOAL if row_has_chip else PlanKind.RIGHT_EDGE
         right_plan = Plan(kind, path, path[-1], reason)

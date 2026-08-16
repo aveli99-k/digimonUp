@@ -118,7 +118,7 @@ class ChipTracker:
             # 이펙트 여부를 확인하지 못했다. 두 프레임 연속으로 같아야 믿는다.
             if detected and self._pending == detected:
                 self.chips = set(detected)
-                self._misses = {c: 0 for c in detected}
+                self._misses = dict.fromkeys(detected, 0)
                 self._pending = None
             else:
                 self._pending = set(detected)

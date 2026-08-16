@@ -16,6 +16,8 @@ import pytest
 
 from digimonup.vision import board
 from digimonup.app import explore
+from digimonup.app import engine as app_engine
+from digimonup.base import common
 from digimonup.vision import recognize
 import synth
 from digimonup.app.explore import ExploreConfig, ExploreEngine, Stopped
@@ -219,7 +221,7 @@ def test_분석_도중_정지하면_이전_경로가_뒤늦게_실행되지_않�
     """분석이 끝난 뒤 정지 상태를 다시 확인하므로 경로 실행에 진입하면 안 된다."""
     img = _frame((1, 1))
     eng = _engine([img] * 50)
-    monkeypatch.setattr(explore, "enumerate_candidates", lambda: [])
+    monkeypatch.setattr(app_engine, "enumerate_candidates", lambda: [])
     eng.pick_window = lambda: eng.window
 
     real_analyze = explore.analyze
@@ -777,6 +779,8 @@ def test_개수_읽기가_실패해도_매크로는_계속_돈다(monkeypatch):
 
 
 # ------------------------------------------------------- 중지 키 (전역 단축키)
+# 정지/중지 키 처리는 탐사와 던전이 함께 쓰는 base.common.StoppableEngine 에 있다.
+# 그래서 키 눌림 검사를 가로챌 곳도 explore 가 아니라 거기다.
 def test_중지키를_누르면_멈추고_클릭이_나가지_않는다(monkeypatch):
     """매크로가 마우스를 움직이는 중에는 GUI 정지 버튼을 겨냥하기 어렵다.
     그래서 창 포커스와 무관한 전역 단축키로도 멈출 수 있어야 한다.
@@ -785,7 +789,7 @@ def test_중지키를_누르면_멈추고_클릭이_나가지_않는다(monkeypa
     eng = _engine([img] * 40, stop_key="F12")
     assert eng._stop_vk == 0x7B, "F12 의 가상 키 코드가 아닙니다"
 
-    monkeypatch.setattr(explore, "is_stop_key_pressed", lambda vk: vk == 0x7B)
+    monkeypatch.setattr(common, "is_stop_key_pressed", lambda vk: vk == 0x7B)
     with pytest.raises(Stopped):
         eng._check_stop()
     assert eng.stop_event.is_set(), "키를 뗀 뒤에도 정지 상태로 남아야 합니다"
@@ -798,7 +802,7 @@ def test_중지키를_누르면_멈추고_클릭이_나가지_않는다(monkeypa
 
 def test_중지키를_누르지_않으면_계속_돈다(monkeypatch):
     eng = _engine([_frame((1, 1))] * 10, stop_key="F12")
-    monkeypatch.setattr(explore, "is_stop_key_pressed", lambda vk: False)
+    monkeypatch.setattr(common, "is_stop_key_pressed", lambda vk: False)
     eng._check_stop()          # 예외가 나면 안 된다
 
 
@@ -807,7 +811,7 @@ def test_중지키를_비워두면_키_검사를_하지_않는다(monkeypatch):
     eng = _engine([_frame((1, 1))] * 10, stop_key="")
     assert eng._stop_vk == 0
     called = []
-    monkeypatch.setattr(explore, "is_stop_key_pressed",
+    monkeypatch.setattr(common, "is_stop_key_pressed",
                         lambda vk: called.append(vk) or True)
     eng._check_stop()          # 검사 자체를 건너뛰므로 멈추지 않는다
     assert called == [], "중지키를 비웠는데도 키를 검사했습니다"
@@ -1153,7 +1157,6 @@ def test_공짜로_갈_수_있으면_부수지_않는다():
     299초 기록의 부수기 5회 중 3회가 이런 경우였다(35.6초·168.5초·276.3초).
     나머지 2회는 정말 아무 데도 못 가는 판이었다 — 아래 test_정말_막혔으면 참고.
     """
-    from digimonup.vision.recognize import Kind
     layout = [
         ".....",
         "..X..",
@@ -1276,3 +1279,124 @@ def test_설정으로_돌진을_끌_수_있다():
     eng._press_green_button = lambda: (_ for _ in ()).throw(
         AssertionError("꺼 두었는데 눌렀습니다"))
     assert eng._dash_if_worth(_with_player(_scene_with_goals([]), 1, 1)) is False
+
+
+# ------------------------------------------ 전진(스크롤) 판정은 한 곳에서만
+def test_전진은_1열에서_오른쪽을_누른_것뿐이다():
+    """실측(19장): 판이 밀리는 것은 1열에서 오른쪽을 눌렀을 때뿐이다.
+
+        0열에서 오른쪽   스크롤 X (1/1)   플레이어가 1열로 걸어갈 뿐이다
+        1열에서 오른쪽   스크롤 O (8/8)
+        위/아래/왼쪽     150초 12회 전부 지형 변화 0
+    """
+    assert explore.advances("RIGHT", (2, 1)) is True
+    assert explore.advances("RIGHT", (2, 0)) is False, \
+        "0열에서 오른쪽은 걸어가는 것이지 전진이 아닙니다"
+    for d in ("UP", "DOWN", "LEFT"):
+        assert explore.advances(d, (2, 1)) is False, f"{d} 를 전진으로 셌습니다"
+
+
+@pytest.mark.parametrize("direction", ["UP", "DOWN", "LEFT"])
+def test_전진이_아닌_이동은_스크롤로_세지_않는다(direction):
+    """화면 비교가 '한 칸 밀렸다'고 해도 전진 조건이 아니면 스크롤이 아니다.
+
+    걸음수 감소로 성공을 판정하는 자리에는 이 조건이 걸려 있었는데, 화면
+    비교로 판정하는 자리에는 빠져 있었다. 세로 이동을 스크롤로 세면 칩
+    추적기가 칩 자리를 한 열씩 더 밀어(chiptrack.advanced), 없는 칩이
+    플레이어 자리로 들어와 '먹었다'로 처리된다 = 유령칩.
+
+    움직인 것은 맞으니 성공으로 두되, 판이 어떻게 바뀌었는지는 모르는 것으로
+    보고 남은 경로를 버려야 한다.
+    """
+    dr, dc = DELTA[direction]
+    base = synth.make_board(SCROLL_BASE)
+    after = synth.make_board(_scrolled_layout(SCROLL_BASE, dr, dc))
+    g = board.detect_board(base)
+
+    eng = _engine([base, after, after, after, after])
+    eng._arrived_by_motion = lambda *a, **k: False   # 화면 비교만 남긴다
+    ok, _, scrolled = eng._do_move(g, (1, 1), (1 + dr, 1 + dc), direction)
+    assert ok is True, f"{direction}: 판이 한 칸 밀렸는데 실패로 봤습니다"
+    assert scrolled is False, f"{direction}: 전진이 아닌데 스크롤로 셌습니다"
+    assert eng._path_dirty is True, \
+        "무슨 일이 있었는지 모르면 남은 경로를 버려야 합니다"
+
+
+# ------------------------------------- 부수기 개수 0은 되돌아오는 상태다
+def test_부수기가_다시_채워지면_파괴를_다시_시도한다():
+    """개수가 0이라고 파괴 기능 자체를 끄면 안 된다.
+
+    실측 회귀의 반대편: '개수를 못 읽었다'로 기능을 영구히 끄던 버그를 고치면서
+    이번에는 '개수가 0이다'로 끄게 됐다. 그런데 0 은 되돌아오는 상태다(아이템은
+    다시 채워진다). 한 번 바닥나면 그 뒤로 아무리 채워도 장애물을 영영 벽으로
+    보게 된다. break_disabled 는 '눌러도 안 부서지는 게임'이라는 판정에만 쓴다.
+    """
+    from digimonup.logic.pathfind import Plan, PlanKind as PK
+    from digimonup.vision.recognize import Detection, Kind
+
+    eng = _engine([], blocked_wait_sec=0.0, use_green_button=False)
+    sc = _board_scene([".....", "..X..", ".....", ".....", "....."])
+    sc.player = Detection(Kind.PLAYER, 1, 1, 1.0)
+    plan = Plan(PK.BREAK_OBSTACLE, [(1, 1), (1, 2)], (1, 2), "")
+
+    eng.counts = Counters(steps=100, break_=0, dash=0)
+    assert eng._handle_blocked(sc, plan) is True, "0개인데 클릭하러 갔습니다"
+    assert eng.break_disabled is False, \
+        "개수가 0이라고 파괴 기능을 영구히 꺼 버렸습니다"
+    assert eng._break_cost() is None, "0개일 때는 장애물을 벽으로 봐야 합니다"
+
+    eng.counts = Counters(steps=100, break_=7, dash=0)
+    assert eng._handle_blocked(sc, plan) is False, \
+        "부수기를 채워 넣었는데도 파괴를 접고 있습니다"
+    assert eng._break_cost() is not None
+
+
+def test_눌러도_안_부서지는_게임에서는_계속_접어_둔다():
+    """되돌아오지 않는 사실 하나에는 여전히 break_disabled 를 쓴다."""
+    from digimonup.logic.pathfind import Plan, PlanKind as PK
+    from digimonup.vision.recognize import Detection, Kind
+
+    eng = _engine([], blocked_wait_sec=0.0, use_green_button=False)
+    eng.break_disabled = True
+    sc = _board_scene([".....", "..X..", ".....", ".....", "....."])
+    sc.player = Detection(Kind.PLAYER, 1, 1, 1.0)
+    plan = Plan(PK.BREAK_OBSTACLE, [(1, 1), (1, 2)], (1, 2), "")
+
+    eng.counts = Counters(steps=100, break_=99, dash=0)
+    assert eng._handle_blocked(sc, plan) is True, \
+        "부서지지 않는 것을 확인했는데 또 두드립니다"
+    assert eng._break_cost() is None
+
+
+# --------------------------------- 두 번째 실행이 떠 있는 창을 찾을 수 있는가
+def test_떠_있는_창을_제목_앞부분으로_찾는다():
+    """제목에 버전을 붙이기로 한 순간 정확히-맞추기 검사는 영영 못 찾게 됐다.
+
+    single_instance 는 창을 'digimonUp 매크로' 로 찾는데 GUI 제목은
+    'digimonUp 매크로  v1.7.0' 이다. FindWindowW 는 전체가 같아야 하므로
+    두 번째 실행이 앞의 창을 못 띄우고 안내 상자만 띄웠다. 조용히 그랬다.
+    """
+    import tkinter as tk
+
+    from digimonup.app import gui
+    from digimonup.win import single_instance
+
+    assert gui.WINDOW_TITLE.startswith(single_instance.GUI_TITLE), \
+        "GUI 제목의 앞부분이 중복 실행 검사가 찾는 이름과 달라졌습니다"
+
+    try:
+        root = tk.Tk()
+    except tk.TclError as e:                       # 화면이 없는 환경
+        pytest.skip(f"Tk 를 띄울 수 없습니다: {e}")
+    try:
+        root.title(gui.WINDOW_TITLE)
+        root.update()
+        assert single_instance.find_window() != 0, \
+            "떠 있는 창을 제목 앞부분으로 찾지 못했습니다"
+    finally:
+        root.destroy()
+
+
+def test_없는_제목은_찾지_않는다():
+    from digimonup.win import single_instance
+    assert single_instance.find_window("digimonUp_없는창_" * 3) == 0

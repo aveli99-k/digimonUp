@@ -6,6 +6,7 @@ import ctypes
 import json
 import os
 import sys
+import threading
 
 import cv2
 import numpy as np
@@ -19,7 +20,7 @@ from digimonup.win.emulator_window import enable_dpi_awareness  # noqa: F401  (�
 
 
 def load_config() -> dict:
-    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+    with open(CONFIG_PATH, encoding="utf-8") as f:
         cfg = json.load(f)
     # 템플릿은 읽기만 하므로 resource() 로 찾는다. EXE 옆에 있으면 그것을,
     # 없으면 EXE 안에 넣어 둔 기본값을 쓴다(파일 하나로도 돌아가게).
@@ -52,6 +53,17 @@ def load_template(path: str) -> np.ndarray:
     if tpl is None:
         raise ValueError(f"템플릿 이미지를 읽을 수 없습니다: {path}")
     return tpl
+
+
+def load_button_templates(cfg: dict) -> tuple[np.ndarray, np.ndarray]:
+    """1번 기능이 쓰는 '매칭'/'포기' 버튼 템플릿 두 장.
+
+    설정 열쇠 이름을 아는 곳을 한 군데로 둔다. 네트워크 매크로와 점검 도구가
+    각자 `cfg["match_template"]` 를 적고 있었는데, 열쇠 이름이 바뀌면 한쪽만
+    고쳐진다. 없으면 FileNotFoundError, 못 읽으면 ValueError 가 그대로 올라온다.
+    """
+    return (load_template(cfg["match_template"]),
+            load_template(cfg["giveup_template"]))
 
 
 def _match_once(screen_gray: np.ndarray, tpl_gray: np.ndarray):
@@ -141,6 +153,57 @@ VK_CODES = {
 
 def vk_of(name: str) -> int:
     return VK_CODES.get(str(name).upper(), 0x7B)
+
+
+class StoppableEngine:
+    """정지 요청과 중지 키를 함께 보는 부분. 기능 엔진들이 물려받는다.
+
+    탐사(2번)와 던전(3번)에 **글자 하나까지 같은 코드**가 한 벌씩 있었다.
+    정지의 뜻이 기능마다 다를 이유가 없는데도 두 벌이면 한쪽만 고쳐진다.
+    `Stopped` 예외를 이미 한 벌로 모아 둔 것과 같은 이유로 여기로 합친다.
+
+    게임을 전혀 모른다(스레드 이벤트와 키 코드만 안다). 그래서 base 에 둔다.
+    """
+
+    def __init__(self, stop_key: str = "", log=print):
+        self.log = log
+        self.stop_event = threading.Event()
+        self.stop_key = str(stop_key or "")
+        # 중지 키의 가상 키 코드. 빈 문자열이면 0 이라 키 검사를 건너뛴다.
+        self._stop_vk = vk_of(self.stop_key) if self.stop_key else 0
+
+    def stop(self) -> None:
+        self.stop_event.set()
+
+    def _check_stop(self) -> None:
+        """정지가 걸렸으면 즉시 예외로 빠져나온다.
+
+        클릭 직전, 분석 직후 등 모든 갈림길에서 호출한다. 덕분에 '분석 중에
+        정지를 눌렀는데 분석이 끝난 뒤 이전 경로가 뒤늦게 실행되는' 일이 없다.
+
+        중지 키(기본 F12)도 여기서 함께 본다. 매크로가 마우스를 계속 움직이는
+        중에는 GUI 의 정지 버튼을 겨냥해서 누르기가 까다롭기 때문이다.
+        전역 감지라 게임 창이 앞에 있어도 먹는다.
+        """
+        if self.stop_event.is_set():
+            raise Stopped()
+        if self._stop_vk and is_stop_key_pressed(self._stop_vk):
+            # 한 번 감지하면 stop_event 를 세워 둔다. 키에서 손을 떼도 계속
+            # 정지 상태이고, GUI 도 같은 깃발을 보므로 상태가 어긋나지 않는다.
+            self.stop_event.set()
+            self.log(f"[정지] {self.stop_key} 키를 눌러 중단합니다.")
+            raise Stopped()
+
+    def _sleep(self, sec: float) -> None:
+        """정지 요청에 즉시 반응하는 sleep."""
+        if self.stop_event.wait(sec):
+            raise Stopped()
+
+    def log_stop_hint(self) -> None:
+        """멈추는 방법을 한 줄로 알린다. 중지 키가 없으면 아무것도 안 한다."""
+        if self._stop_vk:
+            self.log(f"[정지] 멈추려면 GUI 의 정지 버튼 또는 "
+                     f"{self.stop_key} 키를 누르세요 (어느 창에서든 먹습니다).")
 
 
 def ensure_windows() -> None:

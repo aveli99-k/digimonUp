@@ -25,7 +25,7 @@ from __future__ import annotations
 import numpy as np
 
 from digimonup.base.paths import DUNGEON_TEMPLATE_DIR
-from digimonup.vision.recognize import TemplateSet, match_big
+from digimonup.vision.recognize import TemplateSet, match_in_band
 
 # 팝업 종류: (한글 이름, 템플릿 폴더, 글자가 있는 세로 범위, 최소 유사도)
 #
@@ -66,18 +66,12 @@ def find(img: np.ndarray, templates: dict[str, TemplateSet] | None = None,
     if img is None or img.size == 0:
         return None
     tsets = templates if templates is not None else load_templates()
-    h = img.shape[0]
     for kind, (_, band, min_score) in POPUPS.items():
-        tset = tsets.get(kind)
-        if not tset:
-            continue
-        top = max(0, int(h * band[0])) if use_band else 0
-        bottom = min(h, int(h * band[1])) if use_band else h
-        if bottom <= top:
-            continue
-        score, box, _ = match_big(img[top:bottom], tset, scales=(0.85, 1.0, 1.15))
+        # 띠를 자르고 상자를 원본 좌표로 되돌리는 일은 recognize 가 한 벌로 맡는다.
+        score, box, _ = match_in_band(img, tsets.get(kind),
+                                      band if use_band else None)
         if score >= min_score and box is not None:
-            return kind, float(score), (box[0], box[1] + top, box[2], box[3] + top)
+            return kind, score, box
     return None
 
 

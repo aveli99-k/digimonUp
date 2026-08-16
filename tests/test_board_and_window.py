@@ -7,6 +7,7 @@ import numpy as np
 
 from digimonup.vision import board
 from digimonup.app import explore
+from digimonup.app import engine as app_engine
 from digimonup.win import emulator_window
 from digimonup.vision import recognize
 import synth
@@ -123,8 +124,8 @@ def test_여러_창_중_올바른_창을_고른다(monkeypatch, blank_templates)
     ]
     frames = {0x111: other, 0x222: game, 0x333: other}
 
-    monkeypatch.setattr(explore, "enumerate_candidates", lambda **kw: cands)
-    monkeypatch.setattr(explore, "capture_client", lambda h: frames[h])
+    monkeypatch.setattr(app_engine, "enumerate_candidates", lambda **kw: cands)
+    monkeypatch.setattr(app_engine, "capture_client", lambda h: frames[h])
 
     engine = explore.ExploreEngine(log=lambda *_: None)
     win = engine.pick_window()
@@ -146,8 +147,8 @@ def test_상단_탭_템플릿이_있으면_탭까지_맞아야_고른다(monkeyp
                   width=tabbed.shape[1], height=tabbed.shape[0]),
     ]
     frames = {0xAAA: plain, 0xBBB: tabbed}
-    monkeypatch.setattr(explore, "enumerate_candidates", lambda **kw: cands)
-    monkeypatch.setattr(explore, "capture_client", lambda h: frames[h])
+    monkeypatch.setattr(app_engine, "enumerate_candidates", lambda **kw: cands)
+    monkeypatch.setattr(app_engine, "capture_client", lambda h: frames[h])
 
     engine = explore.ExploreEngine(log=lambda *_: None)
     engine.templates["top_tab"] = _tset([synth.crop(tabbed, (230, 60, 470, 130))])
@@ -160,8 +161,8 @@ def test_후보가_하나도_조건을_만족하지_않으면_None(monkeypatch, 
     other = synth.make_non_game_window()
     cands = [Candidate(hwnd=0x1, top_hwnd=0x0, title="MuMuPlayer", cls="Qt5QWindowIcon",
                        width=other.shape[1], height=other.shape[0])]
-    monkeypatch.setattr(explore, "enumerate_candidates", lambda **kw: cands)
-    monkeypatch.setattr(explore, "capture_client", lambda h: other)
+    monkeypatch.setattr(app_engine, "enumerate_candidates", lambda **kw: cands)
+    monkeypatch.setattr(app_engine, "capture_client", lambda h: other)
     engine = explore.ExploreEngine(log=lambda *_: None)
     assert engine.pick_window() is None
 
@@ -212,7 +213,7 @@ def test_모르는_창에는_더_높은_격자_기준을_요구한다(monkeypatc
                         cls="Chrome_WidgetWin_1", width=game.shape[1],
                         height=game.shape[0])
 
-    monkeypatch.setattr(explore, "capture_client", lambda h: game)
+    monkeypatch.setattr(app_engine, "capture_client", lambda h: game)
 
     # 게임판 신뢰도가 기본 기준은 넘지만 '모르는 창' 기준에는 못 미치는 상황
     monkeypatch.setattr(explore, "detect_board",
@@ -220,11 +221,11 @@ def test_모르는_창에는_더_높은_격자_기준을_요구한다(monkeypatc
                             xs=[0, 1, 2, 3, 4, 5], ys=[0, 1, 2, 3, 4, 5],
                             confidence=0.55, detail={}))
 
-    monkeypatch.setattr(explore, "enumerate_candidates", lambda **kw: [unknown])
+    monkeypatch.setattr(app_engine, "enumerate_candidates", lambda **kw: [unknown])
     assert explore.ExploreEngine(log=lambda *_: None).pick_window() is None, \
         "모르는 창이 낮은 신뢰도로 통과했습니다"
 
-    monkeypatch.setattr(explore, "enumerate_candidates", lambda **kw: [known])
+    monkeypatch.setattr(app_engine, "enumerate_candidates", lambda **kw: [known])
     win = explore.ExploreEngine(log=lambda *_: None).pick_window()
     assert win is not None and win.hwnd == 0x11, \
         "아는 앱플레이어인데 같은 신뢰도로 거절했습니다"

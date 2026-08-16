@@ -21,12 +21,10 @@
 from __future__ import annotations
 
 import os
-import threading
 import time
 from collections import Counter, deque
 from dataclasses import dataclass
 
-import cv2
 import numpy as np
 
 from digimonup.logic import chiptrack
@@ -34,15 +32,15 @@ from digimonup.vision import counters
 from digimonup.base import trace
 from digimonup.vision import popup
 from digimonup.vision import overlay
-from digimonup.base.common import Stopped, is_stop_key_pressed, vk_of
+from digimonup.app.engine import WindowedEngine
+from digimonup.base.common import Stopped
 from digimonup.vision.board import Grid, N, detect_board
-from digimonup.win.emulator_window import (EmulatorWindow, capture_client,
-                             enable_dpi_awareness, enumerate_candidates)
+from digimonup.win.emulator_window import enable_dpi_awareness
 from digimonup.logic.pathfind import (ADVANCE_COL, PLAYER_MAX_COL, PlanKind,
                                       plan_route)
 from digimonup.logic import pathfind
 from digimonup.logic.pathfind import break_cost as pathfind_break_cost
-from digimonup.vision.recognize import (Detection, Kind, Scene, TemplateSet, analyze,
+from digimonup.vision.recognize import (Kind, Scene, TemplateSet, analyze,
                        find_blocked_toast,
                        find_green_button, find_top_tab, hsv_of, load_templates,
                        mask_highlight, mask_obstacle, motion_report,
@@ -186,6 +184,22 @@ DEAD_CLICK_SAME = 0.02
 DASH_MIN_CHIPS = 2
 
 
+def advances(direction: str, frm: tuple[int, int]) -> bool:
+    """이 이동이 게임판을 한 열 미는가 (= 전진인가).
+
+    실측(19장): 판이 밀리는 것은 **1열에서 오른쪽을 눌렀을 때뿐**이다.
+        0열에서 오른쪽   스크롤 X  (1/1)   플레이어가 1열로 걸어갈 뿐이다
+        1열에서 오른쪽   스크롤 O  (8/8)
+    위/아래/왼쪽은 150초 12회 전부 지형 변화가 없었다.
+
+    이 조건을 **한 곳에만** 둔다. 전에는 걸음수 감소로 성공을 판정하는 자리에만
+    적혀 있고, 화면 비교로 판정하는 자리에는 없었다. 스크롤로 잘못 세면 칩
+    추적기가 칩 자리를 한 열 더 밀어, 없는 칩이 플레이어 자리로 들어와 '먹었다'로
+    처리된다 — 사용자가 유령칩이라고 부른 증상이다.
+    """
+    return direction == "RIGHT" and frm[1] == PLAYER_MAX_COL
+
+
 @dataclass
 class ExploreStats:
     cycles: int = 0
@@ -196,25 +210,19 @@ class ExploreStats:
     green_button_uses: int = 0
 
 
-class ExploreEngine:
+class ExploreEngine(WindowedEngine):
     """탐사 자동화 엔진.
 
     GUI 든 콘솔이든 콜백만 갈아끼우면 그대로 쓸 수 있게 분리했다.
+    창 고르기·캡처·정지 처리는 던전과 똑같아서 WindowedEngine 에 한 벌만 둔다.
     """
 
     def __init__(self, cfg: ExploreConfig | None = None,
                  log=print, status=lambda s: None, preview=lambda img: None):
         self.cfg = cfg or ExploreConfig()
-        self.log = log
-        self.status = status
-        self.preview = preview
-        self.stop_event = threading.Event()
-        self.window: EmulatorWindow | None = None
+        super().__init__(self.cfg.stop_key, log, status, preview)
         self.templates: dict[str, TemplateSet] = load_templates()
         self.stats = ExploreStats()
-        self.last_frame: np.ndarray | None = None
-        self.last_overlay: np.ndarray | None = None
-        self.candidates_report: list[str] = []
         # 장애물 파괴 연속 실패 횟수. 한도를 넘으면 파괴 시도를 접는다.
         self.break_fail_streak = 0
         self.break_disabled = not self.cfg.allow_obstacle_break
@@ -231,8 +239,6 @@ class ExploreEngine:
         self.locked_grid: Grid | None = None
         self._locked_size: tuple[int, int] | None = None
         self._grid_votes: deque = deque(maxlen=9)
-        # 중지 키의 가상 키 코드. 빈 문자열이면 0 이라 키 검사를 건너뛴다.
-        self._stop_vk = vk_of(self.cfg.stop_key) if self.cfg.stop_key else 0
         # 왼쪽 아래 아이템 개수. 못 읽으면 항목이 None 이다.
         self.counts = counters.Counters()
         self._last_counts_line = ""
@@ -265,116 +271,55 @@ class ExploreEngine:
         self._last_moved: float | None = None
         # 직전 사이클에 보인 0열 칩. 되돌아가야 하는 칩은 두 번 봐야 인정한다.
         self._prev_zero: set = set()
+        # '부수기가 0개라 안 누른다'를 이미 알렸는가. 매 사이클 같은 줄을
+        # 쏟아내지 않으려는 표시일 뿐, 판단을 붙잡아 두지는 않는다.
+        self._told_no_breaks = False
 
     # 걸음수가 이만큼 넘게 늘면 '채워 넣었다'로 보고 기준을 다시 잡는다.
     _STEPS_REFILL = 5
 
-    # ---------------------------------------------------------------- 정지
-    def stop(self) -> None:
-        self.stop_event.set()
-
-    def _check_stop(self) -> None:
-        """정지가 걸렸으면 즉시 예외로 빠져나온다.
-
-        클릭 직전, 분석 직후 등 모든 갈림길에서 호출한다. 덕분에 '분석 중에
-        정지를 눌렀는데 분석이 끝난 뒤 이전 경로가 뒤늦게 실행되는' 일이 없다.
-
-        중지 키(기본 F12)도 여기서 함께 본다. 매크로가 마우스를 계속 움직이는
-        중에는 GUI 의 정지 버튼을 겨냥해서 누르기가 까다롭기 때문이다.
-        전역 감지라 게임 창이 앞에 있어도 먹는다.
-        """
-        if self.stop_event.is_set():
-            raise Stopped()
-        if self._stop_vk and is_stop_key_pressed(self._stop_vk):
-            # 한 번 감지하면 stop_event 를 세워 둔다. 키에서 손을 떼도 계속
-            # 정지 상태이고, GUI 도 같은 깃발을 보므로 상태가 어긋나지 않는다.
-            self.stop_event.set()
-            self.log(f"[정지] {self.cfg.stop_key} 키를 눌러 중단합니다.")
-            raise Stopped()
-
     # ------------------------------------------------------------ 창 고정
-    def pick_window(self) -> EmulatorWindow | None:
-        """후보 창을 모두 평가해서 조건을 만족하는 창 하나를 고정한다.
-
-        창 제목만 믿지 않는다. 두 조건을 함께 본다.
-          1) 상단에 고정된 게임 탭 이미지가 있는가 (템플릿이 있을 때만)
-          2) 화면 안에 5x5 게임판 격자 테두리가 있는가
-        """
-        self.candidates_report = []
-        cands = enumerate_candidates(min_size=self.cfg.window_min_size,
-                                     title_hint=self.cfg.window_title_hint)
-        if not cands:
-            self.log("[창] 앱플레이어로 볼 만한 창을 하나도 찾지 못했습니다. "
-                     "앱플레이어가 실행 중이고 최소화되어 있지 않은지 확인하세요.")
-            if self.cfg.window_title_hint:
-                self.log(f"[창] config.json 의 window_title_hint="
-                         f"'{self.cfg.window_title_hint}' 때문에 걸러졌을 수 있습니다.")
-            return None
-
-        tab_tpl = self.templates["top_tab"] if self.cfg.require_top_tab else None
+    # 창 고르기의 뼈대는 WindowedEngine 에 있다. 여기서는 **무엇을 보고 고르는지**
+    # 두 조건만 채운다.
+    #   1) 상단에 고정된 게임 탭 이미지가 있는가 (템플릿이 있을 때만)
+    #   2) 화면 안에 5x5 게임판 격자 테두리가 있는가
+    def _prepare_judging(self) -> None:
         if self.templates["top_tab"] and not self.cfg.require_top_tab:
             self.log("[창] require_top_tab=false 라 상단 탭 검사를 건너뜁니다.")
-        best = None
-        for cand in cands:
-            img = None
-            try:
-                img = capture_client(cand.hwnd)
-            except Exception as e:
-                cand.reasons.append(f"캡처 실패({e})")
 
-            if img is None:
-                cand.reasons.append("캡처 실패")
-                self.candidates_report.append(cand.describe())
-                continue
+    def _judge(self, img: np.ndarray, cand) -> None:
+        tab_tpl = self.templates["top_tab"] if self.cfg.require_top_tab else None
+        grid = detect_board(img, min_confidence=0.0)
+        cand.board_score = grid.confidence if grid else 0.0
+        if tab_tpl:
+            cand.tab_score, _ = find_top_tab(img, tab_tpl)
+        else:
+            cand.tab_score = 0.0
+            cand.reasons.append("상단 탭 템플릿 없음(격자만으로 판정)")
 
-            grid = detect_board(img, min_confidence=0.0)
-            cand.board_score = grid.confidence if grid else 0.0
-            if tab_tpl:
-                cand.tab_score, _ = find_top_tab(img, tab_tpl)
-            else:
-                cand.tab_score = 0.0
-                cand.reasons.append("상단 탭 템플릿 없음(격자만으로 판정)")
+        # 앱플레이어라고 확신하지 못한 창에는 더 높은 기준을 요구한다.
+        need = (self.cfg.board_min if cand.emulator
+                else max(self.cfg.board_min, self.cfg.unknown_board_min))
+        board_ok = cand.board_score >= need
+        tab_ok = (not tab_tpl) or (cand.tab_score >= self.cfg.top_tab_min)
+        if not board_ok:
+            cand.reasons.append(
+                f"격자 신뢰도 부족 {cand.board_score:.2f} (기준 {need:.2f}"
+                + ("" if cand.emulator else ", 모르는 창이라 기준이 높음") + ")")
+        if not tab_ok:
+            cand.reasons.append(f"상단 탭 불일치 {cand.tab_score:.2f}")
+        cand.ok = board_ok and tab_ok
 
-            # 앱플레이어라고 확신하지 못한 창에는 더 높은 기준을 요구한다.
-            need = (self.cfg.board_min if cand.emulator
-                    else max(self.cfg.board_min, self.cfg.unknown_board_min))
-            board_ok = cand.board_score >= need
-            tab_ok = (not tab_tpl) or (cand.tab_score >= self.cfg.top_tab_min)
-            if not board_ok:
-                cand.reasons.append(
-                    f"격자 신뢰도 부족 {cand.board_score:.2f} (기준 {need:.2f}"
-                    + ("" if cand.emulator else ", 모르는 창이라 기준이 높음") + ")")
-            if not tab_ok:
-                cand.reasons.append(f"상단 탭 불일치 {cand.tab_score:.2f}")
-            cand.ok = board_ok and tab_ok
+    def _no_match_help(self, n_candidates: int) -> list[str]:
+        return [
+            f"후보 {n_candidates}개를 모두 봤지만 5x5 게임판이 있는 창이 "
+            f"없습니다. 탐사 화면을 띄운 상태인지 확인하세요.",
+            "창은 뜨는데 계속 실패하면 tools/detect_windows.py 를 실행해 "
+            "어떤 창이 어떻게 보이는지 확인할 수 있습니다.",
+        ]
 
-            self.candidates_report.append(cand.describe())
-            if cand.ok and (best is None or cand.score > best.score):
-                best = cand
-
-        for line in self.candidates_report:
-            self.log("[창] " + line)
-
-        if best is None:
-            self.log(f"[창] 후보 {len(cands)}개를 모두 봤지만 5x5 게임판이 있는 창이 "
-                     f"없습니다. 탐사 화면을 띄운 상태인지 확인하세요.")
-            self.log("[창] 창은 뜨는데 계속 실패하면 tools/detect_windows.py 를 "
-                     "실행해 어떤 창이 어떻게 보이는지 확인할 수 있습니다.")
-            return None
-
-        win = EmulatorWindow(best.hwnd, best.top_hwnd, best.title)
-        self.log(f"[창] 고정: HWND=0x{best.hwnd:X} ({best.width}x{best.height}) "
-                 f"'{best.title}' 격자={best.board_score:.2f} 탭={best.tab_score:.2f}")
-        return win
-
-    # ------------------------------------------------------------- 캡처
-    def _capture(self) -> np.ndarray | None:
-        if self.window is None or not self.window.is_valid():
-            return None
-        img = self.window.capture()
-        if img is not None:
-            self.last_frame = img
-        return img
+    def _picked_note(self, cand) -> str:
+        return f"격자={cand.board_score:.2f} 탭={cand.tab_score:.2f}"
 
     # ------------------------------------------------- 이동 불가 안내 처리
     def _toast_visible(self, img: np.ndarray) -> bool:
@@ -498,7 +443,7 @@ class ExploreEngine:
     def _motion_cell(self, img: np.ndarray, grid: Grid) -> tuple[int, int] | None:
         """짧은 간격으로 몇 장 더 찍어 움직인 칸을 찾는다.
 
-        자세한 근거는 recognize.motion_player_cell 참고. 판이 스크롤하는 중이면
+        자세한 근거는 recognize.motion_report 참고. 판이 스크롤하는 중이면
         온 화면이 움직이므로 그쪽에서 None 을 돌려주고, 그때는 기존 방식으로
         되돌아간다.
         """
@@ -651,13 +596,24 @@ class ExploreEngine:
         #
         # 못 읽는 것은 **일시적**이다(숫자가 네 자리가 되거나 옆에 타이머가
         # 뜨면 막힌다). 그걸로 기능을 영구히 끄면 안 된다.
+        #
+        # **개수가 0이라고 기능을 끄지도 않는다.** 0 은 되돌아오는 상태다
+        # (아이템은 다시 채워진다). 예전에는 여기서 break_disabled 를 세워
+        # 버려서, 한 번 바닥나면 그 뒤로 아무리 채워 넣어도 다시는 부수지
+        # 않았다 — 장애물을 영영 벽으로 보게 되는데, 그건 위 주석이 막으려던
+        # 바로 그 사고다. break_disabled 는 '눌러도 안 부서지는 게임'이라는
+        # 판정에만 남긴다. 그것만이 되돌아오지 않는 사실이다.
         left = self.counts.break_
-        if (plan.kind == PlanKind.BREAK_OBSTACLE
-                and not self.break_disabled and left is not None and left <= 0):
+        out_of_breaks = left is not None and left <= 0
+        if not out_of_breaks:
+            self._told_no_breaks = False
+        elif plan.kind == PlanKind.BREAK_OBSTACLE and not self._told_no_breaks:
+            # 매 사이클 같은 줄을 쏟아내지 않도록 한 번만 알린다.
             self.log("[장애물] 부수기 아이템이 0개라 클릭하지 않습니다.")
-            self.break_disabled = True
+            self._told_no_breaks = True
 
-        if plan.kind == PlanKind.BREAK_OBSTACLE and self.break_disabled:
+        if plan.kind == PlanKind.BREAK_OBSTACLE and (self.break_disabled
+                                                     or out_of_breaks):
             # 장애물 직접 클릭이 안 먹히는 것을 확인했다면 초록 버튼을 쓴다.
             if self._press_green_button():
                 self._last_layout = None
@@ -947,10 +903,14 @@ class ExploreEngine:
         scene.goals = [d for d in scene.goals if (d.row, d.col) in valid]
         # **scene.goal(가장 확실한 칩 하나) 도 함께 맞춘다.**
         #
-        # 이걸 빼먹으면 걸러낸 칩이 뒷문으로 되살아난다. plan_route 에는
-        # "goals 가 비었으면 goal 을 쓴다"는 호환용 갈래가 있어서, 추적기가
-        # 이펙트로 판정해 버린 칩을 그대로 쫓아가게 된다. 실측 300초에서
-        # 좌이동 5건 중 3건이 '계획=목적지인데 칩 목록은 비어 있음' 이었다.
+        # 이걸 빼먹으면 걸러낸 칩이 뒷문으로 되살아난다. plan_route 에 "goals 가
+        # 비었으면 goal 을 쓴다"는 호환용 갈래가 있던 때, 추적기가 이펙트로
+        # 판정해 버린 칩을 그대로 쫓아갔다. 실측 300초에서 좌이동 5건 중 3건이
+        # '계획=목적지인데 칩 목록은 비어 있음' 이었다.
+        #
+        # 그 갈래는 이제 없앴지만(진실이 두 곳에 있으면 한쪽만 걸러진다),
+        # 걸러낸 칩이 Scene 어디에도 남지 않게 하는 것은 그대로 지킨다.
+        # 오버레이·디버그가 아직 이 값을 읽고, 언제든 새 사용처가 생긴다.
         scene.goal = max(scene.goals, key=lambda d: d.confidence,
                          default=None) if scene.goals else None
         for r, c in ignored:
@@ -1026,7 +986,7 @@ class ExploreEngine:
         if not self.cfg.use_green_button:
             return False
         if not self._can_use("dash"):
-            self.log(f"[초록버튼] 돌진 아이템이 0개입니다. 누르지 않습니다.")
+            self.log("[초록버튼] 돌진 아이템이 0개입니다. 누르지 않습니다.")
             return False
         if (self.cfg.green_button_max_uses
                 and self.stats.green_button_uses >= self.cfg.green_button_max_uses):
@@ -1205,7 +1165,14 @@ class ExploreEngine:
         retries = 0          # 화면이 클릭 전과 똑같은 채로 몇 번 연속인가
         # 확인 루프가 찍는 프레임을 (시각, 화면) 으로 조금 남긴다.
         # 도착 확인에 **움직임**을 쓰기 위해서다. 아래 _arrived_by_motion 참고.
-        seen_frames: deque = deque(maxlen=60)
+        #
+        # 몇 장이면 되는지는 정해져 있다. _arrived_by_motion 은 지금 화면과
+        # motion_gap_sec 만큼 떨어진 **한 장**만 있으면 되므로, 그 간격을 덮을
+        # 만큼만 들고 있으면 결과가 똑같다. 예전에는 60장이었는데, 709x1260
+        # 프레임 한 장이 2.7MB 라 이동 한 번에 160MB 를 쥐고 있는 셈이었다.
+        span = max(self.cfg.poll_interval_sec, 0.01)
+        keep = min(24, max(4, int(self.cfg.motion_gap_sec / span) + 4))
+        seen_frames: deque = deque(maxlen=keep)
         while time.time() < deadline:
             self._check_stop()
             after = self._capture()
@@ -1261,7 +1228,7 @@ class ExploreEngine:
                 # 플레이어가 선 자리였다.
                 ok = True
                 conclusive = True
-                scrolled = (direction == "RIGHT" and frm[1] == PLAYER_MAX_COL)
+                scrolled = advances(direction, frm)
                 self._path_dirty = True
             elif self._arrived_by_motion(seen_frames, use_grid, to):
                 # 색 기반 빠른 추적은 가끔 말이 안 되는 칸을 낸다.
@@ -1296,7 +1263,15 @@ class ExploreEngine:
                 if self._scrolled_one_cell(before, after, use_grid, direction,
                                            before_sig):
                     ok = True
-                    scrolled = True
+                    # **판이 밀렸다고 세는 조건은 한 가지뿐이다**(advances 참고).
+                    # 화면 비교가 '한 칸 밀렸다'고 해도 1열에서 오른쪽을 누른
+                    # 것이 아니면 둘 중 하나가 틀린 것이다. 그때 스크롤로 세면
+                    # 칩 추적기가 칩 자리를 한 열 더 밀어 유령칩을 만든다.
+                    # 움직인 것은 맞으니 성공으로 두되, 판이 어떻게 바뀌었는지
+                    # 모르는 것으로 하고 남은 경로만 버린다.
+                    scrolled = advances(direction, frm)
+                    if not scrolled:
+                        self._path_dirty = True
 
             # 이 폴링에서 무엇이 보였는지 통째로 남긴다. 확인이 왜 실패했는지는
             # 눈으로 볼 수 없어서, 남기지 않으면 매번 추측으로 고치게 된다.
@@ -1402,14 +1377,8 @@ class ExploreEngine:
         loaded = {k: len(v.images) for k, v in self.templates.items() if v.images}
         self.log(f"[템플릿] {loaded if loaded else '없음 (색 기반 인식으로 동작)'}")
 
-        self.window = self.pick_window()
-        if self.window is None:
-            self.status("창을 찾지 못함")
+        if not self.attach_window():
             return
-        self.status(f"실행 중 (HWND 0x{self.window.hwnd:X})")
-        if self._stop_vk:
-            self.log(f"[정지] 멈추려면 GUI 의 정지 버튼 또는 "
-                     f"{self.cfg.stop_key} 키를 누르세요 (어느 창에서든 먹습니다).")
 
         lost = 0
         try:
@@ -1504,7 +1473,6 @@ class ExploreEngine:
 
                 drawn = overlay.draw(img, grid, scene, plan.path,
                                      f"{plan.kind.value} | {' '.join(plan.moves)}")
-                self.last_overlay = drawn
                 self.preview(drawn)
                 self._save_debug("last", img, grid, scene, plan.path, plan.kind.value)
 
@@ -1668,8 +1636,3 @@ class ExploreEngine:
                      f"/ 초록버튼 {s.green_button_uses}")
             self.trace.close()
             self.status("정지됨")
-
-    def _sleep(self, sec: float) -> None:
-        """정지 요청에 즉시 반응하는 sleep."""
-        if self.stop_event.wait(sec):
-            raise Stopped()

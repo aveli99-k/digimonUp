@@ -390,12 +390,30 @@ MOTION_MAX_CELLS = 6         # 이보다 많은 칸이 움직였으면 판 전�
 
 
 def motion_report(frames: list[np.ndarray], grid: Grid):
-    """칸별 '움직인 픽셀 비율'을 재서 (움직인 칸 수, 가장 움직인 칸, 그 비율).
+    """칸별 '움직인 픽셀 비율'을 재서 (움직인 칸 수, 가장 움직인 칸, 그 비율, 전부).
+
+    **이것이 플레이어를 찾는 가장 확실한 방법이다.** 디지몬은 가만히 서 있을
+    때도 제자리 애니메이션이 돌아가는 **판 위의 유일한 움직이는 물체**라서,
+    생김새와 아무 상관이 없다. 색·모양·템플릿은 디지몬을 바꾸면 전부 무너진다.
+
+    실측(파란 디지몬, 프레임 7장 0.18초 간격)
+        (4,1) 0.296   <- 진짜 디지몬
+        (3,1) 0.105   <- 머리가 위 칸으로 삐져나온 부분
+        나머지 21칸 전부 0.000
+
+    머리는 위 칸으로, 발은 아래 칸으로 조금씩 삐져나오지만 **몸통이 있는 칸이
+    언제나 가장 많이 움직인다**(몸통 0.296 대 머리 0.105 로 세 배). 그래서
+    부르는 쪽은 위아래로 더 보정하지 않고 최댓값 칸을 그대로 쓰면 된다.
 
     움직인 칸이 MOTION_MAX_CELLS 를 넘으면 **판이 통째로 움직이는 중**이다.
     그런 프레임은 플레이어 위치뿐 아니라 칩/장애물 인식도 믿을 수 없다.
     (실측: 스크롤 애니메이션 중에 찍힌 프레임에서 칩이 7개로 잡혔고, 매크로가
      그 유령 칩을 먹으러 왼쪽으로 갔다. 정지 화면에서는 한 번도 안 나온다.)
+
+    판정은 부르는 쪽이 한다(ExploreEngine._motion_cell). 예전에는 여기에도
+    같은 판정을 하는 motion_player_cell 이 한 벌 더 있었는데, 엔진은 스크롤
+    중이면 한 번 더 찍는 재시도가 필요해서 결국 자기 것만 쓰고 있었다.
+    같은 규칙이 두 벌이면 한쪽만 고쳐진다.
     """
     if len(frames) < 2 or grid is None:
         return 0, None, 0.0, {}
@@ -415,33 +433,6 @@ def motion_report(frames: list[np.ndarray], grid: Grid):
     cell, best = max(ratios.items(), key=lambda kv: kv[1])
     return busy, cell, best, ratios
 
-
-
-def motion_player_cell(frames: list[np.ndarray], grid: Grid
-                       ) -> tuple[tuple[int, int], float] | None:
-    """연속 프레임에서 **움직인 칸**을 찾아 플레이어 칸을 돌려준다.
-
-    이것이 플레이어를 찾는 가장 확실한 방법이다. 디지몬은 가만히 서 있을 때도
-    제자리 애니메이션이 돌아가는 **판 위의 유일한 움직이는 물체**라서, 생김새와
-    아무 상관이 없다. 색·모양·템플릿은 디지몬을 바꾸면 전부 무너진다.
-
-    실측(파란 디지몬, 프레임 7장 0.18초 간격)
-        (4,1) 0.296   <- 진짜 디지몬
-        (3,1) 0.105   <- 머리가 위 칸으로 삐져나온 부분
-        나머지 21칸 전부 0.000
-
-    반환: ((행, 열), 움직임 비율) — 판이 통째로 움직이는 중이면 None.
-    """
-    busy, cell, best, _ = motion_report(frames, grid)
-    if cell is None or best < MOTION_CELL_MIN:
-        return None
-    if busy > MOTION_MAX_CELLS:
-        # 판이 스크롤하거나 화면이 통째로 바뀌는 중이다. 이때는 못 믿는다.
-        return None
-    # 머리는 위 칸으로, 발은 아래 칸으로 조금씩 삐져나오지만 **몸통이 있는 칸이
-    # 언제나 가장 많이 움직인다.** 실측에서 몸통 0.296 대 머리 0.105 로 세 배
-    # 차이가 났다. 그래서 위아래로 더 보정하지 않고 최댓값 칸을 그대로 쓴다.
-    return cell, best
 
 
 def _highlight_center(
@@ -682,9 +673,9 @@ def detect_player(img: np.ndarray, grid: Grid, tpl: dict[str, TemplateSet],
         note += " (위치는 실루엣 기준)"
 
     got = _highlight_center(highlights, cells)
-    hint, hint_sure = got if got else (None, False)
+    hint = got[0] if got else None
 
-    # **움직임이 잡혔으면 그게 답이다.** motion_player_cell 참고.
+    # **움직임이 잡혔으면 그게 답이다.** motion_report 참고.
     # 생김새에 전혀 기대지 않는 유일한 신호라, 다른 모든 근거보다 우선한다.
     if motion_cell is not None:
         return Detection(Kind.PLAYER, motion_cell[0], motion_cell[1], 0.95, bbox,
@@ -1047,7 +1038,8 @@ def analyze(img: np.ndarray, grid: Grid, tpl: dict[str, TemplateSet],
                 if cells[r][c] == Kind.OBSTACLE:
                     continue
                 # 스프라이트 마스크를 못 만든 경우에만 예전처럼 칸째로 뺀다.
-                if player is not None and player.sprite is None                         and _overlaps_player(rect, player):
+                if (player is not None and player.sprite is None
+                        and _overlaps_player(rect, player)):
                     continue
                 if player and (r, c) == (player.row, player.col):
                     continue
@@ -1076,7 +1068,8 @@ def analyze(img: np.ndarray, grid: Grid, tpl: dict[str, TemplateSet],
                 continue
             # 플레이어 픽셀은 이미 마스크에서 빠졌다. 마스크를 못 만들었을 때만
             # 예전처럼 걸친 칸을 통째로 뺀다.
-            if player is not None and player.sprite is None                     and _overlaps_player(rect, player):
+            if (player is not None and player.sprite is None
+                    and _overlaps_player(rect, player)):
                 continue
             # 템플릿 검사는 위(칩보다 먼저)에서 이미 끝냈다. 그 결과를 쓴다.
             found = item_by_template.get((r, c))
@@ -1119,6 +1112,60 @@ def find_top_tab(img: np.ndarray, tset: TemplateSet, top_ratio: float = 0.35):
     return score, box
 
 
+def band_of(img: np.ndarray, band: tuple[float, float] | None):
+    """화면에서 세로 띠만 잘라 (조각, 세로 오프셋). band 가 None 이면 전체.
+
+    띠 밖이거나 잘라 낸 것이 비면 (None, 0).
+    """
+    if img is None or img.size == 0:
+        return None, 0
+    h = img.shape[0]
+    if band is None:
+        return img, 0
+    top = max(0, int(h * band[0]))
+    bottom = min(h, int(h * band[1]))
+    if bottom <= top:
+        return None, 0
+    strip = img[top:bottom]
+    return (strip, top) if strip.size else (None, 0)
+
+
+def match_in_band(img: np.ndarray, tset: TemplateSet | None,
+                  band: tuple[float, float] | None = None,
+                  scales=(0.85, 1.0, 1.15)):
+    """화면의 **세로 띠**만 잘라 큰 템플릿을 찾는다.
+
+    반환: (score, bbox, label) — bbox 는 **원본 화면 좌표**다(띠 오프셋을 더해
+    돌려준다). band 가 None 이면 화면 전체를 본다.
+
+    왜 띠만 보나 (실측, 709x1260 화면 / '이동할 수 없습니다' 안내문)
+        전체 화면        75.7ms   안내문 0.869 / 없을 때 최대 0.549
+        0.40~0.60 띠     48.2ms   안내문 0.869 / 없을 때 최대 0.266
+
+    빨라지는 데다 **오탐 여유까지 넓어진다.** 화면 다른 곳의 비슷한 무늬를
+    아예 보지 않기 때문이다.
+
+    이 '잘라서 찾고 오프셋을 더해 돌려준다'는 네 곳에 한 벌씩 있었다 —
+    안내문, 초록 버튼, 팝업(실패창/보상창), 던전의 도전 버튼. 전부 같은 근거로
+    같은 일을 하는데, 오프셋을 더하는 것을 한 군데서만 빠뜨려도 클릭이 엉뚱한
+    데로 간다. 한 벌만 둔다.
+    """
+    strip, top = band_of(img, band)
+    if not tset or strip is None:
+        return 0.0, None, ""
+    score, box, label = match_big(strip, tset, scales=scales)
+    if box is not None:
+        box = (box[0], box[1] + top, box[2], box[3] + top)
+    return float(score), box, label
+
+
+def center_of(box: tuple[int, int, int, int] | None) -> tuple[int, int] | None:
+    """상자의 중심. 누를 자리를 정할 때 쓴다."""
+    if box is None:
+        return None
+    return (box[0] + box[2]) // 2, (box[1] + box[3]) // 2
+
+
 # 안내문이 뜨는 세로 범위 (화면 높이 대비).
 # 실측: 안내문 상자가 0.47~0.53 에 있었다. 넉넉히 잡아도 화면의 1/5 면 된다.
 TOAST_BAND = (0.40, 0.60)
@@ -1128,34 +1175,15 @@ def find_blocked_toast(img: np.ndarray, tset: TemplateSet):
     """'해당 위치로 이동할 수 없습니다' 안내문을 찾는다 (클릭하면 안 되는 대상).
 
     이동 확인 루프에서 되풀이해 불리는 자리라 속도가 곧 이동 확인 횟수다.
-    그래서 두 가지로 줄인다.
-
-      1. **안내문이 뜨는 띠만 본다.** 화면 세로 0.40~0.60 밖은 볼 이유가 없다.
-      2. match_big (축소 선별 -> 원본 확인) 으로 훑는다.
-
-    실측 (709x1260 화면)
-        전체 화면        75.7ms   안내문 0.869 / 없을 때 최대 0.549
-        0.40~0.60 띠     48.2ms   안내문 0.869 / 없을 때 최대 0.266
-
-    띠로 자르면 빨라지는 데다 **오탐 여유까지 넓어진다.** 화면 다른 곳의
-    비슷한 무늬를 아예 보지 않기 때문이다.
-
-    반환하는 상자는 **원본 화면 좌표**다(띠 오프셋을 더해 돌려준다).
+    띠만 보는 근거는 match_in_band 참고.
     """
-    if not tset or img is None or img.size == 0:
-        return 0.0, None
-    h = img.shape[0]
-    top = int(h * TOAST_BAND[0])
-    band = img[top:int(h * TOAST_BAND[1])]
-    if band.size == 0:
-        return 0.0, None
-    score, box, _ = match_big(band, tset, scales=(0.85, 1.0, 1.15))
-    if box is not None:
-        box = (box[0], box[1] + top, box[2], box[3] + top)
+    score, box, _ = match_in_band(img, tset, TOAST_BAND)
     return score, box
 
 
 GREEN_BUTTON_MIN = 0.60
+# 초록 버튼이 있는 세로 범위. 게임판이 아니라 하단 UI 영역만 본다.
+GREEN_BAND = (0.75, 1.0)
 
 
 def find_green_button(img: np.ndarray, tset: TemplateSet | None = None
@@ -1166,18 +1194,15 @@ def find_green_button(img: np.ndarray, tset: TemplateSet | None = None
     덩어리를 찾는다. 이 버튼은 사용 횟수가 정해져 있으므로(실측: 30회) 정말
     막혔을 때만 눌러야 한다.
     """
-    if img is None or img.size == 0:
-        return None
-    h, w = img.shape[:2]
-    top = int(h * 0.75)          # 게임판이 아니라 하단 UI 영역만 본다
-    band = img[top:]
-    if band.size == 0:
+    band, top = band_of(img, GREEN_BAND)
+    if band is None:
         return None
 
     if tset:
-        score, box, _ = match_big(band, tset, scales=(0.8, 0.9, 1.0, 1.1, 1.2))
+        score, box, _ = match_in_band(img, tset, GREEN_BAND,
+                                      scales=(0.8, 0.9, 1.0, 1.1, 1.2))
         if score >= GREEN_BUTTON_MIN and box:
-            return (box[0] + box[2]) // 2, top + (box[1] + box[3]) // 2
+            return center_of(box)
 
     green = _range_mask(band, None, (35, 90, 110), (85, 255, 255))
     green = cv2.morphologyEx(green, cv2.MORPH_CLOSE, np.ones((15, 15), np.uint8))

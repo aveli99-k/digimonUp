@@ -54,19 +54,18 @@
 from __future__ import annotations
 
 import os
-import threading
 import time
 from collections import Counter
 from dataclasses import dataclass, field
 
 import numpy as np
 
-from digimonup.base.common import Stopped, is_stop_key_pressed, vk_of
+from digimonup.app.engine import WindowedEngine
+from digimonup.base.common import Stopped
 from digimonup.base.imgio import imwrite
 from digimonup.base.paths import DEBUG_DIR, DUNGEON_TEMPLATE_DIR
-from digimonup.vision.recognize import TemplateSet, match_big
-from digimonup.win.emulator_window import (EmulatorWindow, capture_client,
-                                           enable_dpi_awareness, enumerate_candidates)
+from digimonup.vision.recognize import TemplateSet, center_of, match_in_band
+from digimonup.win.emulator_window import enable_dpi_awareness
 
 
 @dataclass
@@ -142,7 +141,7 @@ KINDS: dict[str, tuple[str, str, str]] = {
 
 # 이 둘은 팝업이다. 글자가 있는 자리가 아니라 **바깥**을 눌러 닫는다.
 # 그리고 떠 있는 동안에는 아래 도전 버튼을 눌러도 팝업이 클릭을 먹으므로,
-# 도전보다 먼저 본다(KINDS 의 순서가 곧 우선순위다).
+# 도전보다 먼저 본다(_look 이 이 목록을 먼저 훑는다).
 POPUP_KINDS = ("fail", "reward")
 
 
@@ -174,67 +173,30 @@ def load_dungeon_templates() -> dict[str, TemplateSet]:
     return {kind: TemplateSet(kind, base_dir=DUNGEON_TEMPLATE_DIR) for kind in KINDS}
 
 
-class DungeonEngine:
-    """던전 자동화 엔진. GUI 든 콘솔이든 콜백만 갈아끼우면 그대로 쓴다."""
+class DungeonEngine(WindowedEngine):
+    """던전 자동화 엔진. GUI 든 콘솔이든 콜백만 갈아끼우면 그대로 쓴다.
+
+    창 고르기·캡처·정지 처리는 탐사와 똑같아서 WindowedEngine 에 한 벌만 둔다.
+    """
 
     def __init__(self, cfg: DungeonConfig | None = None,
                  log=print, status=lambda s: None, preview=lambda img: None):
         self.cfg = cfg or DungeonConfig()
-        self.log = log
-        self.status = status
-        self.preview = preview
-        self.stop_event = threading.Event()
-        self.window: EmulatorWindow | None = None
+        super().__init__(self.cfg.stop_key, log, status, preview)
         self.templates = load_dungeon_templates()
         self.stats = DungeonStats()
-        self.last_frame: np.ndarray | None = None
-        self.candidates_report: list[str] = []
-        self._stop_vk = vk_of(self.cfg.stop_key) if self.cfg.stop_key else 0
         # 마지막 스캔의 (도전, 실패) 점수. 대기 로그에 찍는다.
-        self._last_scores: dict[str, float] = {kind: 0.0 for kind in KINDS}
-
-    # ---------------------------------------------------------------- 정지
-    def stop(self) -> None:
-        self.stop_event.set()
-
-    def _check_stop(self) -> None:
-        if self.stop_event.is_set():
-            raise Stopped()
-        if self._stop_vk and is_stop_key_pressed(self._stop_vk):
-            self.stop_event.set()
-            self.log(f"[정지] {self.cfg.stop_key} 키를 눌러 중단합니다.")
-            raise Stopped()
-
-    def _sleep(self, sec: float) -> None:
-        """정지 요청에 즉시 반응하는 sleep."""
-        if self.stop_event.wait(sec):
-            raise Stopped()
+        self._last_scores: dict[str, float] = dict.fromkeys(KINDS, 0.0)
 
     # ------------------------------------------------------------ 화면 읽기
-    def _in_band(self, img: np.ndarray, band: tuple[float, float]):
-        """화면에서 띠만 잘라 (조각, 세로 오프셋) 로 돌려준다."""
-        h = img.shape[0]
-        top = max(0, int(h * band[0]))
-        bottom = min(h, int(h * band[1]))
-        if bottom <= top:
-            return None, 0
-        return img[top:bottom], top
-
     def _find(self, img: np.ndarray, name: str, band: tuple[float, float]):
         """띠 안에서 템플릿을 찾는다. 반환: (점수, 중심(x, y) | None)
 
-        중심은 **화면 전체 기준**이다(띠 오프셋을 더해 돌려준다).
+        중심은 **화면 전체 기준**이다. 띠를 자르고 상자를 원본 좌표로 되돌리는
+        일은 recognize.match_in_band 가 한 벌로 맡는다.
         """
-        tset = self.templates[name]
-        if not tset or img is None or img.size == 0:
-            return 0.0, None
-        strip, top = self._in_band(img, band)
-        if strip is None:
-            return 0.0, None
-        score, box, _ = match_big(strip, tset, scales=(0.85, 1.0, 1.15))
-        if box is None:
-            return float(score), None
-        return float(score), ((box[0] + box[2]) // 2, top + (box[1] + box[3]) // 2)
+        score, box, _ = match_in_band(img, self.templates[name], band)
+        return score, center_of(box)
 
     def _find_kind(self, img: np.ndarray, kind: str):
         _, _, band_key = KINDS[kind]
@@ -283,82 +245,34 @@ class DungeonEngine:
         return None
 
     # ------------------------------------------------------------ 창 고정
-    def pick_window(self) -> EmulatorWindow | None:
-        """후보 창을 모두 평가해서 던전 화면이 보이는 창 하나를 고정한다.
+    # 창 고르기의 뼈대는 WindowedEngine 에 있다. 여기서는 무엇을 보고 고르는지만
+    # 채운다 — 도전 버튼이나 실패/보상 글자 중 **하나라도** 실제로 보이는 창.
+    #
+    # 탐사(2번)는 5x5 게임판으로 고르는데, 던전 화면에는 게임판이 없으므로 그
+    # 검사를 그대로 쓰면 후보가 0개가 된다. 화면 내용으로 판정한다는 원칙은 같고
+    # 보는 대상만 다르다.
+    def _judge(self, img: np.ndarray, cand) -> None:
+        scores = {kind: self._find_kind(img, kind)[0] for kind in KINDS}
+        cand.board_score = max(scores.values())   # 표시용 (describe 가 찍는다)
+        cand.ok = any(score >= self._min_of(kind)
+                      for kind, score in scores.items())
+        cand.reasons.append(" ".join(f"{KINDS[k][0]}={s:.2f}"
+                                     for k, s in scores.items()))
+        if not cand.ok:
+            cand.reasons.append("셋 다 기준 미달 (" + " / ".join(
+                f"{KINDS[k][0]} {self._min_of(k):.2f}" for k in KINDS) + ")")
 
-        창 제목만 믿지 않는다. 도전 버튼이나 실패 글자 중 **하나라도** 실제로
-        보이는 창만 통과시킨다.
-        """
-        self.candidates_report = []
-        cands = enumerate_candidates(min_size=self.cfg.window_min_size,
-                                     title_hint=self.cfg.window_title_hint)
-        if not cands:
-            self.log("[창] 앱플레이어로 볼 만한 창을 하나도 찾지 못했습니다. "
-                     "앱플레이어가 실행 중이고 최소화되어 있지 않은지 확인하세요.")
-            if self.cfg.window_title_hint:
-                self.log(f"[창] config.json 의 window_title_hint="
-                         f"'{self.cfg.window_title_hint}' 때문에 걸러졌을 수 있습니다.")
-            return None
+    def _no_match_help(self, n_candidates: int) -> list[str]:
+        out = [f"후보 {n_candidates}개를 모두 봤지만 던전 화면이 보이는 창이 "
+               f"없습니다. 게임에서 던전 화면(도전 버튼이 보이는 화면)이나 "
+               f"실패창/보상창을 띄운 상태인지 확인하세요."]
+        if not all(self.templates.values()):
+            out.append("templates/dungeon/ 의 템플릿이 비어 있습니다. "
+                       "tools/capture_dungeon.py 로 먼저 찍어주세요.")
+        return out
 
-        best = None
-        best_score = 0.0
-        for cand in cands:
-            img = None
-            try:
-                img = capture_client(cand.hwnd)
-            except Exception as e:
-                cand.reasons.append(f"캡처 실패({e})")
-            if img is None:
-                cand.reasons.append("캡처 실패")
-                self.candidates_report.append(cand.describe())
-                continue
-
-            scores = {kind: self._find_kind(img, kind)[0] for kind in KINDS}
-            cand.board_score = max(scores.values())   # 표시용 (describe 가 찍는다)
-            cand.ok = any(score >= self._min_of(kind)
-                          for kind, score in scores.items())
-            cand.reasons.append(" ".join(f"{KINDS[k][0]}={s:.2f}"
-                                         for k, s in scores.items()))
-            if not cand.ok:
-                cand.reasons.append("셋 다 기준 미달 (" + " / ".join(
-                    f"{KINDS[k][0]} {self._min_of(k):.2f}" for k in KINDS) + ")")
-
-            self.candidates_report.append(cand.describe())
-            if cand.ok and cand.board_score > best_score:
-                best, best_score = cand, cand.board_score
-
-        for line in self.candidates_report:
-            self.log("[창] " + line)
-
-        if best is None:
-            self.log(f"[창] 후보 {len(cands)}개를 모두 봤지만 던전 화면이 보이는 창이 "
-                     f"없습니다. 게임에서 던전 화면(도전 버튼이 보이는 화면)이나 "
-                     f"실패창/보상창을 띄운 상태인지 확인하세요.")
-            if not all(self.templates.values()):
-                self.log("[창] templates/dungeon/ 의 템플릿이 비어 있습니다. "
-                         "tools/capture_dungeon.py 로 먼저 찍어주세요.")
-            return None
-
-        win = EmulatorWindow(best.hwnd, best.top_hwnd, best.title)
-        self.log(f"[창] 고정: HWND=0x{best.hwnd:X} ({best.width}x{best.height}) "
-                 f"'{best.title}' 일치={best_score:.2f}")
-        return win
-
-    # ------------------------------------------------------------- 캡처
-    def _capture(self, preview: bool = False) -> np.ndarray | None:
-        """창을 캡처한다.
-
-        미리보기는 부르는 쪽이 정한다. 창 고르기처럼 판단과 무관한 캡처까지
-        GUI 로 보내면 큐가 그림으로 가득 차 화면이 굼떠진다.
-        """
-        if self.window is None or not self.window.is_valid():
-            return None
-        img = self.window.capture()
-        if img is not None:
-            self.last_frame = img
-            if preview:
-                self.preview(img)
-        return img
+    def _picked_note(self, cand) -> str:
+        return f"일치={cand.board_score:.2f}"
 
     def _save_debug(self, name: str, img: np.ndarray | None) -> None:
         if not self.cfg.save_debug or img is None:
@@ -423,14 +337,8 @@ class DungeonEngine:
                 self.status("정지됨")
                 return
 
-        self.window = self.pick_window()
-        if self.window is None:
-            self.status("창을 찾지 못함")
+        if not self.attach_window():
             return
-        self.status(f"실행 중 (HWND 0x{self.window.hwnd:X})")
-        if self._stop_vk:
-            self.log(f"[정지] 멈추려면 GUI 의 정지 버튼 또는 "
-                     f"{self.cfg.stop_key} 키를 누르세요 (어느 창에서든 먹습니다).")
 
         # 마지막으로 누른 대상과 시각. 같은 것이 계속 보이면 recheck_sec 뒤에
         # 한 번씩만 더 누른다.

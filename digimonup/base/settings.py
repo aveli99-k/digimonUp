@@ -9,7 +9,7 @@ from digimonup.base.paths import CONFIG_PATH
 
 def load_raw() -> dict:
     try:
-        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        with open(CONFIG_PATH, encoding="utf-8") as f:
             return json.load(f)
     except (OSError, json.JSONDecodeError):
         return {}
