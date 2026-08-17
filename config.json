@@ -59,6 +59,7 @@
     "challenge_min": 0.8,
     "fail_min": 0.7,
     "reward_min": 0.7,
+    "subjugate_min": 0.8,
     "fail_band": [
       0.02,
       0.32
@@ -68,6 +69,10 @@
       0.45
     ],
     "challenge_band": [
+      0.65,
+      0.95
+    ],
+    "subjugate_band": [
       0.65,
       0.95
     ],

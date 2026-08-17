@@ -1,12 +1,15 @@
 """던전 엔진 동작 테스트.
 
 여기서 지키려는 것
-  - 도전·실패창·보상창을 **매 스캔마다 다** 찾는다. 한 판의 끝은 져서 실패창일
-    수도, 이겨서 보상창일 수도 있다. 순서를 정해 기다리면 한쪽에서 멈춘다.
+  - 도전·토벌하기·실패창·보상창을 **매 스캔마다 다** 찾는다. 한 판의 끝은 져서
+    실패창일 수도, 이겨서 보상창일 수도 있다. 순서를 정해 기다리면 한쪽에서 멈춘다.
   - 무엇이든 **한 번만** 누르고, recheck_sec 안에는 다시 누르지 않는다.
     화면이 바뀌는 중에 또 누르면 그 클릭이 아래 화면으로 새어 나간다.
   - recheck_sec 이 지나도 그대로면 **한 번씩** 더 누른다.
-  - 팝업(실패창/보상창)은 도전보다 먼저다. 모달이라 클릭을 먹기 때문이다.
+  - 팝업(실패창/보상창)은 버튼보다 먼저다. 모달이라 클릭을 먹기 때문이다.
+  - 반대로 버튼끼리(도전/토벌하기)는 유사도가 높은 쪽을 누른다. 서로의 클릭을
+    먹지 않으므로 순서를 못 박을 근거가 없다.
+  - 토벌하기 템플릿은 **없어도 된다.** 없으면 도전만 보고 그대로 돈다.
   - 팝업을 닫는 클릭은 **왼쪽 위 구석**이다. 보상창 아래의 '포기' 버튼을 누르면
     던전 보상을 못 받는다.
   - 정지를 누르면 뒤늦은 클릭이 절대 나가지 않는다.
@@ -14,6 +17,10 @@
 인식 판정은 합성이 아니라 **실제 캡처**(tests/fixtures/dungeon_*.png)로 본다.
 버튼과 글자는 색 분포가 아니라 생김새로 가려내는 것이라, 합성 화면으로는
 기준값이 현실에서 갈리는지 확인할 수 없다.
+
+'도전과 토벌하기가 한 화면에 같이 보이는' 상황만은 실제 캡처를 만들 수 없어서
+(그런 화면을 아직 못 봤다) `_find_kind` 를 대신 채워 확인한다. 그 하나를 뺀
+나머지는 전부 실제 캡처로 판정한다.
 """
 
 from __future__ import annotations
@@ -22,8 +29,8 @@ import cv2
 import pytest
 
 from digimonup.base.common import Stopped
-from digimonup.app.dungeon import (KINDS, DungeonConfig, DungeonEngine,
-                                   load_dungeon_templates)
+from digimonup.app.dungeon import (KINDS, REQUIRED_KINDS, DungeonConfig,
+                                   DungeonEngine, load_dungeon_templates)
 
 FIXTURES = {
     "fail": "tests/fixtures/dungeon_fail.png",              # '던전 실패...'
@@ -32,6 +39,9 @@ FIXTURES = {
     # 않은** 프레임이라, 처음 보는 화면에서도 잡히는지 확인하는 셈이 된다.
     "reward": "tests/fixtures/dungeon_reward.png",
     "entry": "tests/fixtures/dungeon_entry.png",
+    # '로스트 섹터 타워' 팝업. 템플릿을 딴 프레임이 아니라 **그 뒤에 따로 찍은**
+    # 프레임이다(같은 화면이라도 다른 캡처여야 확인이 된다).
+    "subjugate": "tests/fixtures/dungeon_subjugate.png",
 }
 
 
@@ -100,10 +110,11 @@ def _run_until(eng, clicks: int):
 
 
 # ------------------------------------------------------------- 인식 자체
-def test_실제_캡처에서_셋이_서로_확실히_갈린다(shots):
+def test_실제_캡처에서_넷이_서로_확실히_갈린다(shots):
     """각 화면에서 제 것만 기준을 넘고, 나머지는 넘지 않아야 한다."""
     eng = _engine([shots["entry"]])
-    screens = {"challenge": "entry", "fail": "fail", "reward": "reward"}
+    screens = {"challenge": "entry", "fail": "fail", "reward": "reward",
+               "subjugate": "subjugate"}
 
     for kind, own in screens.items():
         on = eng._find_kind(shots[own], kind)[0]
@@ -150,11 +161,12 @@ def test_보상창은_이펙트가_돌아도_알아본다(shots):
 
 
 # --------------------------------------------------------- 다 찾아 놓기
-def test_한_스캔에서_셋_다_찾는다(shots):
+def test_한_스캔에서_넷_다_찾는다(shots):
     """어느 화면이 와도 같은 스캔이 알아본다. 순서를 기다리지 않는다."""
     eng = _engine([shots["entry"]])
 
     assert eng._look(shots["entry"]).kind == "challenge"
+    assert eng._look(shots["subjugate"]).kind == "subjugate"
     assert eng._look(shots["fail"]).kind == "fail"
     assert eng._look(shots["fail_stage"]).kind == "fail"
     assert eng._look(shots["reward"]).kind == "reward"
@@ -162,17 +174,100 @@ def test_한_스캔에서_셋_다_찾는다(shots):
 
 
 @pytest.mark.parametrize("popup", ["fail", "reward"])
-def test_팝업이_도전을_이긴다(shots, monkeypatch, popup):
+@pytest.mark.parametrize("button", ["challenge", "subjugate"])
+def test_팝업이_버튼을_이긴다(shots, monkeypatch, popup, button):
     """둘 다 잡히면 유사도와 무관하게 팝업이 먼저다. 모달이 클릭을 먹는다."""
     eng = _engine([shots["entry"]])
-    # 도전 점수를 팝업보다 높게 만들어도 팝업을 골라야 한다.
-    fake = {"challenge": (0.99, (350, 990)), popup: (0.75, (350, 200))}
+    # 버튼 점수를 팝업보다 높게 만들어도 팝업을 골라야 한다.
+    fake = {button: (0.99, (350, 990)), popup: (0.75, (350, 200))}
     monkeypatch.setattr(eng, "_find_kind",
                         lambda img, kind: fake.get(kind, (0.0, None)))
 
     target = eng._look(shots["entry"])
     assert target.kind == popup
     assert target.at == eng.popup_close_point(), "팝업은 글자가 아니라 바깥을 눌러야 합니다"
+
+
+# ------------------------------------------------------------- 토벌하기
+def test_토벌하기_버튼을_실제_버튼_자리에서_찾는다(shots):
+    """실측: 버튼 중심이 세로 0.786 이다 (도전 버튼은 0.77~0.81 이었다)."""
+    eng = _engine([shots["subjugate"]])
+    score, at = eng._find_kind(shots["subjugate"], "subjugate")
+    assert score >= eng.cfg.subjugate_min, f"토벌하기를 놓쳤다 {score:.3f}"
+    assert at is not None
+    h = shots["subjugate"].shape[0]
+    assert 0.70 * h < at[1] < 0.85 * h, "엉뚱한 곳을 누르려 합니다"
+
+
+def test_토벌하기도_찾은_자리를_그대로_누른다(shots):
+    """버튼이므로 팝업과 달리 바깥이 아니라 **그 자리**를 누른다."""
+    eng = _engine([shots["subjugate"]] + [shots["blank"]] * 50, recheck_sec=99)
+
+    target = eng._look(shots["subjugate"])
+    assert target.kind == "subjugate"
+    assert target.at != eng.popup_close_point()
+
+    _run_until(eng, clicks=1)
+    assert eng.window.clicks == [target.at]
+    assert eng.stats.clicks["subjugate"] == 1
+
+
+def test_도전_템플릿이_토벌하기_화면을_먹지_않는다(shots):
+    """둘은 같은 자리에 뜨는 같은 색 버튼이라 서로 닮았다.
+
+    실측: 토벌하기 화면에서 도전 템플릿이 0.639 로, 다른 화면(실패 0.375 /
+    보상 0.552)보다 높다. 기준 0.80 아래이므로 지금은 안 걸린다. 설령 걸려도
+    **누를 자리가 같은 버튼**이라 결과는 달라지지 않지만, 여유가 얼마나 남았는지
+    는 알고 있어야 한다.
+    """
+    eng = _engine([shots["subjugate"]])
+    score = eng._find_kind(shots["subjugate"], "challenge")[0]
+    assert score < eng.cfg.challenge_min, f"토벌하기를 도전으로 읽었다 {score:.3f}"
+
+
+@pytest.mark.parametrize("win,lose", [("subjugate", "challenge"),
+                                      ("challenge", "subjugate")])
+def test_두_버튼이_같이_보이면_유사도가_높은_쪽(shots, monkeypatch, win, lose):
+    """둘 다 그냥 버튼이라 서로의 클릭을 먹지 않는다. 순서를 못 박지 않는다.
+
+    이 상황만은 실제 캡처가 없다 — 둘이 함께 뜨는 화면을 아직 못 봤다.
+    그래서 인식 결과를 대신 채워 **고르는 규칙**만 확인한다.
+    """
+    eng = _engine([shots["blank"]])
+    fake = {win: (0.95, (350, 900)), lose: (0.85, (350, 990))}
+    monkeypatch.setattr(eng, "_find_kind",
+                        lambda img, kind: fake.get(kind, (0.0, None)))
+
+    target = eng._look(shots["blank"])
+    assert target.kind == win
+    assert target.at == (350, 900)
+
+
+def test_토벌하기도_같은_1회_클릭_규칙을_따른다(shots):
+    """recheck_sec 이 지나야 한 번 더 누른다. 도전과 같은 안전장치다."""
+    eng = _engine([shots["subjugate"]] * 400, recheck_sec=0.05)
+    _run_until(eng, clicks=3)
+
+    assert len(set(eng.window.clicks)) == 1, "같은 버튼을 눌러야 합니다"
+    assert eng.stats.clicks["subjugate"] == 1, "같은 화면은 한 번만 세야 합니다"
+    assert eng.stats.reclicks["subjugate"] == 2
+
+
+def test_토벌_템플릿이_없어도_도전은_그대로_돈다(shots):
+    """토벌하기는 선택 사항이다. 없다고 던전 전체가 멈추면 안 된다.
+
+    그 버튼이 안 나오는 던전을 도는 사람에게는 찍을 화면 자체가 없다.
+    템플릿 폴더를 비운 상태로 도전 한 판이 나가야 한다.
+    """
+    eng = _engine([shots["entry"]] * 4 + [shots["blank"]] * 50)
+    eng.templates["subjugate"].images = []      # 안 찍은 상태를 만든다
+    eng.templates["subjugate"].paths = []
+
+    _run_until(eng, clicks=1)
+    assert eng.stats.clicks["challenge"] == 1
+    assert eng.stats.clicks["subjugate"] == 0
+    # 템플릿이 없으면 점수는 늘 0.0 이라 대상이 될 수 없다.
+    assert eng._find_kind(shots["subjugate"], "subjugate")[0] == 0.0
 
 
 def test_실패창이_없어도_바로_도전한다(shots):
@@ -335,9 +430,13 @@ def test_config_json_의_던전_절이_그대로_읽힌다():
     assert cfg.recheck_sec > 0 and cfg.max_attempts > 0
 
 
-def test_템플릿이_세_종류_다_들어_있다():
-    """던전은 색으로는 판단할 수 없어 템플릿이 반드시 있어야 한다."""
+def test_꼭_필요한_템플릿이_다_들어_있다():
+    """던전은 색으로는 판단할 수 없어 템플릿이 반드시 있어야 한다.
+
+    토벌하기는 예외다. 그 버튼이 안 나오는 던전을 도는 사람에게는 찍을 화면
+    자체가 없어서, 없으면 그 종류만 건너뛴다.
+    """
     tpl = load_dungeon_templates()
     assert set(tpl) == set(KINDS)
-    for kind, tset in tpl.items():
-        assert tset.images, f"templates/dungeon/{kind}/ 가 비어 있습니다"
+    for kind in REQUIRED_KINDS:
+        assert tpl[kind].images, f"templates/dungeon/{kind}/ 가 비어 있습니다"

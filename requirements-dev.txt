@@ -23,7 +23,7 @@ ruff>=0.16
 #   _prepared                   TemplateSet 의 리사이즈 캐시. __dict__ 로 다룬다
 #
 #   python -m vulture digimonup tools launcher.py --min-confidence 60 \
-#       --ignore-names "fail_min,reward_min,fail_band,reward_band,challenge_band,FAILSAFE,PAUSE,_prepared"
+#       --ignore-names "fail_min,reward_min,subjugate_min,fail_band,reward_band,challenge_band,subjugate_band,FAILSAFE,PAUSE,_prepared"
 vulture>=2.16
 
 # 붙여넣기 중복 찾기. digimonup/ 와 tools/ 는 지금 임계 5줄에서 0% 다.
